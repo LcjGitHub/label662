@@ -1,0 +1,7 @@
+{
+  "violation_warning_threshold": 60.0,
+  "prediction_hours": 24,
+  "trend_window_hours": 6,
+  "min_data_points": 5,
+  "enable_notifications": true
+}

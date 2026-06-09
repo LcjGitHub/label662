@@ -135,6 +135,16 @@ DEFAULT_SLA_CONFIG = {
 
 SLA_COLUMNS = ["service_type", "sla_threshold", "target_availability"]
 
+SLA_PREDICTION_CONFIG_JSON = os.path.join(DATA_DIR, "sla_prediction_config.json")
+
+DEFAULT_SLA_PREDICTION_CONFIG = {
+    "violation_warning_threshold": 60.0,
+    "prediction_hours": 24,
+    "trend_window_hours": 6,
+    "min_data_points": 5,
+    "enable_notifications": True,
+}
+
 DEFAULT_CAPACITY_CONFIG = {
     "low_load_threshold": 0.4,
     "medium_load_threshold": 0.7,
@@ -222,6 +232,10 @@ def init_csv_files():
     if not os.path.exists(INSTANCE_COST_JSON):
         with open(INSTANCE_COST_JSON, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_INSTANCE_COST, f, ensure_ascii=False, indent=2)
+
+    if not os.path.exists(SLA_PREDICTION_CONFIG_JSON):
+        with open(SLA_PREDICTION_CONFIG_JSON, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_SLA_PREDICTION_CONFIG, f, ensure_ascii=False, indent=2)
 
 
 init_csv_files()
@@ -729,6 +743,159 @@ def load_instance_cost():
 def save_instance_cost(cost_config):
     with open(INSTANCE_COST_JSON, "w", encoding="utf-8") as f:
         json.dump(cost_config, f, ensure_ascii=False, indent=2)
+
+
+def load_sla_prediction_config():
+    if os.path.exists(SLA_PREDICTION_CONFIG_JSON):
+        with open(SLA_PREDICTION_CONFIG_JSON, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        for key, default_val in DEFAULT_SLA_PREDICTION_CONFIG.items():
+            if key not in config:
+                config[key] = default_val
+        return config
+    return DEFAULT_SLA_PREDICTION_CONFIG.copy()
+
+
+def save_sla_prediction_config(config):
+    with open(SLA_PREDICTION_CONFIG_JSON, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def fit_linear_trend(response_times):
+    n = len(response_times)
+    if n < 2:
+        return 0.0, float(response_times[0]) if n > 0 else 0.0
+    x = np.arange(n)
+    y = np.array(response_times, dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    return float(slope), float(intercept)
+
+
+def predict_future_response_times(current_rt, history_rts, prediction_hours=24, volatility=0.15):
+    if len(history_rts) == 0:
+        return [current_rt] * prediction_hours
+    slope, intercept = fit_linear_trend(history_rts)
+    predictions = []
+    base_rt = history_rts[-1] if len(history_rts) > 0 else current_rt
+    for hour in range(1, prediction_hours + 1):
+        trend_rt = base_rt + slope * hour
+        mean_rt = np.mean(history_rts) if len(history_rts) > 0 else current_rt
+        std_rt = np.std(history_rts) if len(history_rts) > 1 else mean_rt * volatility
+        noise = np.random.normal(0, std_rt * 0.3)
+        predicted_rt = max(0.5, trend_rt * 0.7 + (mean_rt + slope * hour) * 0.3 + noise)
+        predictions.append(round(predicted_rt, 1))
+    return predictions
+
+
+def compute_violation_probability(predicted_rts, sla_threshold, history_rts=None):
+    if not predicted_rts:
+        return 0.0
+    violation_count = sum(1 for rt in predicted_rts if rt > sla_threshold)
+    base_prob = (violation_count / len(predicted_rts)) * 100
+    if history_rts and len(history_rts) >= 3:
+        recent_rts = history_rts[-3:]
+        recent_violation = sum(1 for rt in recent_rts if rt > sla_threshold) / len(recent_rts)
+        slope, _ = fit_linear_trend(history_rts)
+        trend_factor = max(0.0, min(1.0, slope / (sla_threshold * 0.1))) if sla_threshold > 0 else 0.0
+        final_prob = base_prob * 0.5 + recent_violation * 100 * 0.3 + trend_factor * 100 * 0.2
+        final_prob = max(0.0, min(100.0, final_prob))
+        return round(final_prob, 1)
+    return round(base_prob, 1)
+
+
+def get_optimization_suggestions(service_name, service_type, current_rt, predicted_rt, sla_threshold, violation_prob, predicted_rts=None):
+    suggestions = []
+    rt_ratio = current_rt / sla_threshold if sla_threshold > 0 else 1.0
+    if violation_prob >= 80:
+        suggestions.append({"level": "critical", "text": "🚨 紧急：立即排查服务性能瓶颈，考虑临时扩容"})
+    elif violation_prob >= 60:
+        suggestions.append({"level": "warning", "text": "⚠️ 高风险：建议尽快进行性能优化或扩容准备"})
+    if rt_ratio >= 0.9:
+        suggestions.append({"level": "warning", "text": "📈 当前响应时间已接近 SLA 阈值，需重点监控"})
+    if predicted_rt > sla_threshold * 1.2:
+        suggestions.append({"level": "warning", "text": "📊 预测响应时间将显著超标，建议检查下游依赖服务"})
+    if service_type == "数据库":
+        suggestions.append({"level": "info", "text": "💡 数据库优化建议：检查慢查询、索引效率、连接池配置"})
+    elif service_type == "缓存服务":
+        suggestions.append({"level": "info", "text": "💡 缓存优化建议：检查缓存命中率、热key分布、内存使用"})
+    elif service_type == "AI 服务":
+        suggestions.append({"level": "info", "text": "💡 AI服务优化建议：考虑模型量化、批处理优化、GPU资源扩容"})
+    elif service_type == "搜索服务":
+        suggestions.append({"level": "info", "text": "💡 搜索服务优化建议：检查索引分片、查询复杂度、缓存策略"})
+    elif service_type == "支付服务":
+        suggestions.append({"level": "info", "text": "💡 支付服务优化建议：检查第三方接口响应、数据库事务、异步处理"})
+    elif service_type == "存储服务":
+        suggestions.append({"level": "info", "text": "💡 存储服务优化建议：检查IOPS、磁盘读写延迟、网络带宽"})
+    else:
+        suggestions.append({"level": "info", "text": "💡 通用优化建议：检查服务日志、资源使用率、依赖服务状态"})
+    slope, _ = fit_linear_trend([current_rt] if not predicted_rts else [current_rt] + list(predicted_rts[:3]))
+    if slope > 0:
+        suggestions.append({"level": "warning", "text": "📈 响应时间呈上升趋势，建议分析增长原因"})
+    return suggestions
+
+
+def compute_sla_violation_predictions():
+    services_df = generate_mock_data()
+    sla_config = load_sla_config()
+    prediction_config = load_sla_prediction_config()
+    all_trends = get_last_7_days_sla()
+
+    prediction_hours = int(prediction_config.get("prediction_hours", 24))
+    warning_threshold = float(prediction_config.get("violation_warning_threshold", 60.0))
+
+    results = []
+    for _, row in services_df.iterrows():
+        sname = row["service_name"]
+        stype = row["service_type"]
+        current_rt = float(row["avg_response_time"])
+        sla_cfg = sla_config.get(stype, {"sla_threshold": 200, "target_availability": 99.0})
+        sla_threshold = float(sla_cfg["sla_threshold"])
+
+        history_rts = []
+        if sname in all_trends:
+            history_rts = [float(d["avg_response_time"]) for d in all_trends[sname]["data"] if d.get("avg_response_time")]
+
+        if len(history_rts) == 0:
+            history_rts = [current_rt]
+
+        predicted_rts = predict_future_response_times(
+            current_rt, history_rts, prediction_hours=prediction_hours
+        )
+        violation_prob = compute_violation_probability(predicted_rts, sla_threshold, history_rts)
+        avg_predicted_rt = round(float(np.mean(predicted_rts)), 1)
+        max_predicted_rt = round(float(np.max(predicted_rts)), 1)
+
+        suggestions = get_optimization_suggestions(
+            sname, stype, current_rt, avg_predicted_rt, sla_threshold, violation_prob, predicted_rts
+        )
+
+        risk_level = "low"
+        if violation_prob >= 80:
+            risk_level = "critical"
+        elif violation_prob >= warning_threshold:
+            risk_level = "high"
+        elif violation_prob >= 40:
+            risk_level = "medium"
+
+        results.append({
+            "service_name": sname,
+            "service_type": stype,
+            "current_rt": round(current_rt, 1),
+            "sla_threshold": sla_threshold,
+            "predicted_rt_avg": avg_predicted_rt,
+            "predicted_rt_max": max_predicted_rt,
+            "violation_probability": violation_prob,
+            "risk_level": risk_level,
+            "predicted_hourly_rts": predicted_rts,
+            "history_rts": history_rts,
+            "suggestions": suggestions,
+            "is_warning": violation_prob >= warning_threshold
+        })
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df = df.sort_values("violation_probability", ascending=False)
+    return df, prediction_config
 
 
 def compute_load_level(utilization, capacity_config):
@@ -4731,6 +4898,7 @@ def render_dependency_page():
 
 def render_sla_config_page():
     sla_config = load_sla_config()
+    prediction_df, prediction_config = compute_sla_violation_predictions()
 
     with st.sidebar:
         st.header("⚙️ SLA 配置")
@@ -4746,6 +4914,53 @@ def render_sla_config_page():
         if st.button("📊 容量规划建议", use_container_width=True, type="secondary", key="sla_cfg_cap_btn"):
             st.session_state["page"] = "capacity"
             st.rerun()
+
+        st.divider()
+        st.subheader("🔔 预警阈值设置")
+
+        new_warning_threshold = st.slider(
+            "违规预警概率阈值 (%)",
+            min_value=10.0,
+            max_value=95.0,
+            value=float(prediction_config.get("violation_warning_threshold", 60.0)),
+            step=5.0,
+            help="当预测违规概率超过此值时触发预警通知",
+            key="sla_pred_warning_threshold"
+        )
+
+        new_prediction_hours = st.slider(
+            "预测时间范围 (小时)",
+            min_value=6,
+            max_value=72,
+            value=int(prediction_config.get("prediction_hours", 24)),
+            step=6,
+            help="预测未来多少小时内的 SLA 违规风险",
+            key="sla_pred_hours"
+        )
+
+        enable_notifications = st.checkbox(
+            "启用预警通知",
+            value=bool(prediction_config.get("enable_notifications", True)),
+            help="开启后，超过阈值的高风险服务将触发预警通知",
+            key="sla_pred_enable_notify"
+        )
+
+        col_cfg_save1, col_cfg_save2 = st.columns(2)
+        with col_cfg_save1:
+            if st.button("💾 保存预测设置", use_container_width=True, type="primary", key="save_pred_cfg"):
+                prediction_config["violation_warning_threshold"] = new_warning_threshold
+                prediction_config["prediction_hours"] = new_prediction_hours
+                prediction_config["enable_notifications"] = enable_notifications
+                save_sla_prediction_config(prediction_config)
+                st.success("✅ 预测设置已保存！")
+                st.cache_data.clear()
+                st.rerun()
+        with col_cfg_save2:
+            if st.button("🔄 重置默认", use_container_width=True, key="reset_pred_cfg"):
+                save_sla_prediction_config(DEFAULT_SLA_PREDICTION_CONFIG.copy())
+                st.success("✅ 已恢复默认设置！")
+                st.cache_data.clear()
+                st.rerun()
 
         st.divider()
         st.subheader("📤 配置导入导出")
@@ -4794,7 +5009,14 @@ def render_sla_config_page():
     st.markdown("为每种服务类型设定 SLA 标准阈值和目标可用性，支持配置导入导出")
     st.divider()
 
-    col_stats1, col_stats2, col_stats3 = st.columns(3)
+    high_risk_df = prediction_df[prediction_df["is_warning"]] if not prediction_df.empty else prediction_df
+    critical_risk_df = prediction_df[prediction_df["risk_level"] == "critical"] if not prediction_df.empty else prediction_df
+    high_risk_count = len(high_risk_df)
+    critical_risk_count = len(critical_risk_df)
+    total_count = len(prediction_df) if not prediction_df.empty else 0
+    avg_violation_prob = round(float(prediction_df["violation_probability"].mean()), 1) if not prediction_df.empty else 0.0
+
+    col_stats1, col_stats2, col_stats3, col_stats4, col_stats5 = st.columns(5)
     with col_stats1:
         st.metric(label="📋 服务类型总数", value=f"{len(sla_config)} 种")
     with col_stats2:
@@ -4805,6 +5027,181 @@ def render_sla_config_page():
         all_targets = [v["target_availability"] for v in sla_config.values()]
         avg_target = np.mean(all_targets)
         st.metric(label="🎯 平均目标可用性", value=f"{avg_target:.2f}%")
+    with col_stats4:
+        st.metric(
+            label="🚨 高风险服务数",
+            value=f"{high_risk_count} 个",
+            delta_color="inverse" if high_risk_count > 0 else "normal"
+        )
+    with col_stats5:
+        st.metric(
+            label="📊 平均违规概率",
+            value=f"{avg_violation_prob}%",
+            delta_color="inverse" if avg_violation_prob > 50 else "normal"
+        )
+
+    st.divider()
+
+    if prediction_config.get("enable_notifications", True) and critical_risk_count > 0:
+        critical_names = "、".join(critical_risk_df["service_name"].tolist())
+        st.error(
+            f"🚨 **SLA 违规预警通知**：检测到 {critical_risk_count} 个严重风险服务 "
+            f"（违规概率≥80%）：{critical_names}。建议立即处理！",
+            icon="🚨"
+        )
+    elif prediction_config.get("enable_notifications", True) and high_risk_count > 0:
+        high_risk_names = "、".join(high_risk_df["service_name"].tolist())
+        st.warning(
+            f"⚠️ **SLA 违规预警通知**：检测到 {high_risk_count} 个高风险服务 "
+            f"（违规概率≥{prediction_config.get('violation_warning_threshold', 60)}%）：{high_risk_names}。",
+            icon="⚠️"
+        )
+
+    st.subheader(f"🔔 SLA 违规风险预警（未来 {prediction_config.get('prediction_hours', 24)} 小时）")
+
+    if prediction_df.empty:
+        st.info("暂无预测数据")
+    else:
+        warning_threshold = float(prediction_config.get("violation_warning_threshold", 60.0))
+        display_pred_df = prediction_df.copy()
+
+        def get_risk_badge(risk_level, prob):
+            if risk_level == "critical":
+                return f"🚨 严重 ({prob}%)"
+            elif risk_level == "high":
+                return f"⚠️ 高风险 ({prob}%)"
+            elif risk_level == "medium":
+                return f"🟡 中风险 ({prob}%)"
+            else:
+                return f"✅ 低风险 ({prob}%)"
+
+        display_pred_df["风险等级"] = display_pred_df.apply(
+            lambda r: get_risk_badge(r["risk_level"], r["violation_probability"]), axis=1
+        )
+        display_pred_df["预测响应时间(ms)"] = display_pred_df.apply(
+            lambda r: f"{r['predicted_rt_avg']} (峰值 {r['predicted_rt_max']})", axis=1
+        )
+        display_pred_df["当前/SLA阈值(ms)"] = display_pred_df.apply(
+            lambda r: f"{r['current_rt']} / {r['sla_threshold']}", axis=1
+        )
+
+        display_df = display_pred_df[[
+            "service_name", "service_type", "当前/SLA阈值(ms)",
+            "预测响应时间(ms)", "风险等级"
+        ]].copy()
+        display_df.columns = [
+            "服务名称", "服务类型", "当前/SLA阈值(ms)",
+            "预测响应时间(ms)", "风险等级"
+        ]
+
+        def color_risk(val):
+            if "严重" in str(val):
+                return "background-color: #7F1D1D; color: #FFFFFF; font-weight: bold;"
+            elif "高风险" in str(val):
+                return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"
+            elif "中风险" in str(val):
+                return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+            else:
+                return "background-color: #D1FAE5; color: #065F46;"
+
+        styled_pred = display_df.style.applymap(color_risk, subset=["风险等级"])
+        st.dataframe(styled_pred, use_container_width=True, hide_index=True, height=300)
+
+        st.divider()
+        st.subheader("📋 高风险服务详情与优化建议")
+
+        high_risk_services = prediction_df[prediction_df["is_warning"]].sort_values(
+            "violation_probability", ascending=False
+        )
+
+        if high_risk_services.empty:
+            st.success("✅ 当前没有超过预警阈值的高风险服务，所有服务运行状态良好！")
+        else:
+            for idx, (_, svc) in enumerate(high_risk_services.iterrows()):
+                with st.expander(
+                    f"{'🚨' if svc['risk_level'] == 'critical' else '⚠️'} "
+                    f"{svc['service_name']} ({svc['service_type']}) - "
+                    f"违规概率: {svc['violation_probability']}%",
+                    expanded=(idx == 0)
+                ):
+                    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+                    with col_d1:
+                        rt_ratio = svc['current_rt'] / svc['sla_threshold'] if svc['sla_threshold'] > 0 else 0
+                        delta_color = "inverse" if rt_ratio >= 0.9 else "normal"
+                        st.metric(
+                            label="当前响应时间",
+                            value=f"{svc['current_rt']} ms",
+                            delta=f"SLA阈值 {svc['sla_threshold']} ms",
+                            delta_color=delta_color
+                        )
+                    with col_d2:
+                        pred_delta = svc['predicted_rt_avg'] - svc['current_rt']
+                        st.metric(
+                            label="预测平均响应时间",
+                            value=f"{svc['predicted_rt_avg']} ms",
+                            delta=f"{pred_delta:+.1f} ms",
+                            delta_color="inverse" if pred_delta > 0 else "normal"
+                        )
+                    with col_d3:
+                        st.metric(
+                            label="预测峰值响应时间",
+                            value=f"{svc['predicted_rt_max']} ms",
+                            delta=f"超出阈值 {max(0, svc['predicted_rt_max'] - svc['sla_threshold']):.1f} ms" if svc['predicted_rt_max'] > svc['sla_threshold'] else "在阈值内",
+                            delta_color="inverse" if svc['predicted_rt_max'] > svc['sla_threshold'] else "normal"
+                        )
+                    with col_d4:
+                        st.metric(
+                            label="SLA 违规概率",
+                            value=f"{svc['violation_probability']}%",
+                            delta=f"预警阈值 {warning_threshold}%",
+                            delta_color="inverse"
+                        )
+
+                    col_chart1, col_chart2 = st.columns([2, 1])
+                    with col_chart1:
+                        hours = list(range(1, len(svc['predicted_hourly_rts']) + 1))
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=hours,
+                            y=svc['predicted_hourly_rts'],
+                            mode="lines+markers",
+                            name="预测响应时间",
+                            line=dict(color="#EF4444", width=3),
+                            marker=dict(size=6),
+                            fill="tozeroy",
+                            fillcolor="rgba(239, 68, 68, 0.1)"
+                        ))
+                        fig.add_hline(
+                            y=svc['sla_threshold'],
+                            line_dash="dash",
+                            line_color="#6B7280",
+                            annotation_text=f"SLA阈值: {svc['sla_threshold']} ms",
+                            annotation_position="bottom right"
+                        )
+                        fig.update_layout(
+                            title=f"📈 未来 {len(hours)} 小时响应时间预测趋势",
+                            height=280,
+                            xaxis_title="未来小时数",
+                            yaxis_title="响应时间 (ms)",
+                            margin=dict(l=40, r=20, t=50, b=40),
+                            plot_bgcolor="#F9FAFB",
+                            paper_bgcolor="white",
+                            legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    with col_chart2:
+                        st.markdown("#### 💡 优化建议")
+                        for sug in svc['suggestions']:
+                            if sug['level'] == 'critical':
+                                st.error(sug['text'])
+                            elif sug['level'] == 'warning':
+                                st.warning(sug['text'])
+                            else:
+                                st.info(sug['text'])
+
+                    if idx < len(high_risk_services) - 1:
+                        st.divider()
 
     st.divider()
 
@@ -4868,6 +5265,7 @@ def render_sla_config_page():
     col_footer1, col_footer2 = st.columns(2)
     with col_footer1:
         st.caption(f"💾 SLA 配置持久化存储于：{SLA_CONFIG_JSON}")
+        st.caption(f"🔮 预测配置存储于：{SLA_PREDICTION_CONFIG_JSON}")
     with col_footer2:
         st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
