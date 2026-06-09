@@ -287,6 +287,21 @@ def save_sla_history(history):
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 
+def compute_achievement_rate_from_rt(avg_rt, sla_threshold, request_count=1000):
+    std = max(avg_rt * 0.1, 0.5)
+    np.random.seed(hash(f"{avg_rt}_{sla_threshold}_{request_count}") % 2**32)
+    samples = np.random.normal(loc=avg_rt, scale=std, size=request_count)
+    samples = np.maximum(0.5, samples)
+    if avg_rt > sla_threshold * 1.2:
+        slow_ratio = min(0.5, (avg_rt - sla_threshold) / sla_threshold)
+        slow_count = int(request_count * slow_ratio)
+        slow_idx = np.random.choice(request_count, slow_count, replace=False)
+        samples[slow_idx] = np.maximum(samples[slow_idx], sla_threshold * np.random.uniform(1.0, 1.5, slow_count))
+    success_count = int(np.sum(samples <= sla_threshold))
+    achievement_rate = (success_count / request_count) * 100
+    return round(achievement_rate, 2), round(float(np.mean(samples)), 1)
+
+
 def generate_sla_daily_data():
     services_df = generate_mock_data()
     sla_config = load_sla_config()
@@ -299,37 +314,23 @@ def generate_sla_daily_data():
     for _, service in services_df.iterrows():
         sname = service["service_name"]
         stype = service["service_type"]
-        base_rt = service["avg_response_time"]
+        avg_rt = float(service["avg_response_time"])
+        request_count = int(service["request_count"])
         sla_cfg = sla_config.get(stype, {"sla_threshold": 200, "target_availability": 99.0})
         sla_threshold = sla_cfg["sla_threshold"]
 
-        np.random.seed(hash(f"{sname}_{today}") % 2**32)
-        num_samples = 1000
-        samples = np.random.normal(loc=base_rt, scale=base_rt * 0.15, size=num_samples)
-        samples = np.maximum(1, samples)
-        if np.random.random() < 0.1:
-            spike_count = int(num_samples * np.random.uniform(0.01, 0.05))
-            spike_idx = np.random.choice(num_samples, spike_count, replace=False)
-            samples[spike_idx] *= np.random.uniform(1.5, 3.0, spike_count)
-
-        avg_rt = float(np.mean(samples))
-        p95_rt = float(np.percentile(samples, 95))
-        p99_rt = float(np.percentile(samples, 99))
-        success_count = int(np.sum(samples <= sla_threshold))
-        achievement_rate = (success_count / num_samples) * 100
+        achievement_rate, sample_avg_rt = compute_achievement_rate_from_rt(avg_rt, sla_threshold, request_count)
         is_achieved = achievement_rate >= sla_cfg["target_availability"]
 
         history[today][sname] = {
             "service_name": sname,
             "service_type": stype,
-            "avg_response_time": round(avg_rt, 1),
-            "p95_response_time": round(p95_rt, 1),
-            "p99_response_time": round(p99_rt, 1),
+            "avg_response_time": sample_avg_rt,
             "sla_threshold": sla_threshold,
             "target_availability": sla_cfg["target_availability"],
-            "total_requests": num_samples,
-            "success_requests": success_count,
-            "achievement_rate": round(achievement_rate, 2),
+            "total_requests": request_count,
+            "success_requests": int(request_count * achievement_rate / 100),
+            "achievement_rate": achievement_rate,
             "is_achieved": is_achieved
         }
 
@@ -340,6 +341,7 @@ def generate_sla_daily_data():
 def get_last_7_days_sla():
     history = generate_sla_daily_data()
     services_df = generate_mock_data()
+    sla_config = load_sla_config()
     all_service_names = sorted(services_df["service_name"].tolist())
 
     date_list = []
@@ -349,42 +351,42 @@ def get_last_7_days_sla():
 
     result = {}
     for sname in all_service_names:
+        svc = services_df[services_df["service_name"] == sname]
+        if len(svc) == 0:
+            continue
+        svc_row = svc.iloc[0]
+        stype = svc_row["service_type"]
+        base_rt = float(svc_row["avg_response_time"])
+        request_count = int(svc_row["request_count"])
+        sla_cfg = sla_config.get(stype, {"sla_threshold": 200, "target_availability": 99.0})
+        sla_threshold = sla_cfg["sla_threshold"]
+        target = sla_cfg["target_availability"]
+
         service_data = []
-        for day in date_list:
+        for day_idx, day in enumerate(date_list):
             if day in history and sname in history[day]:
                 service_data.append(history[day][sname])
             else:
-                svc = services_df[services_df["service_name"] == sname]
-                if len(svc) > 0:
-                    svc_row = svc.iloc[0]
-                    stype = svc_row["service_type"]
-                    sla_cfg = load_sla_config().get(stype, {"sla_threshold": 200, "target_availability": 99.0})
-                    base_rt = svc_row["avg_response_time"]
-                    np.random.seed(hash(f"{sname}_{day}") % 2**32)
-                    num_samples = 1000
-                    samples = np.random.normal(loc=base_rt, scale=base_rt * 0.15, size=num_samples)
-                    samples = np.maximum(1, samples)
-                    avg_rt = float(np.mean(samples))
-                    success_count = int(np.sum(samples <= sla_cfg["sla_threshold"]))
-                    achievement_rate = (success_count / num_samples) * 100
-                    is_achieved = achievement_rate >= sla_cfg["target_availability"]
-                    day_data = {
-                        "service_name": sname,
-                        "service_type": stype,
-                        "avg_response_time": round(avg_rt, 1),
-                        "p95_response_time": round(float(np.percentile(samples, 95)), 1),
-                        "p99_response_time": round(float(np.percentile(samples, 99)), 1),
-                        "sla_threshold": sla_cfg["sla_threshold"],
-                        "target_availability": sla_cfg["target_availability"],
-                        "total_requests": num_samples,
-                        "success_requests": success_count,
-                        "achievement_rate": round(achievement_rate, 2),
-                        "is_achieved": is_achieved
-                    }
-                    service_data.append(day_data)
-                    if day not in history:
-                        history[day] = {}
-                    history[day][sname] = day_data
+                day_offset = 6 - day_idx
+                day_rt = base_rt * (1 + np.sin(day_offset) * 0.05 + np.random.uniform(-0.03, 0.03))
+                day_rt = max(0.5, day_rt)
+                achievement_rate, sample_avg_rt = compute_achievement_rate_from_rt(day_rt, sla_threshold, request_count)
+                is_achieved = achievement_rate >= target
+                day_data = {
+                    "service_name": sname,
+                    "service_type": stype,
+                    "avg_response_time": sample_avg_rt,
+                    "sla_threshold": sla_threshold,
+                    "target_availability": target,
+                    "total_requests": request_count,
+                    "success_requests": int(request_count * achievement_rate / 100),
+                    "achievement_rate": achievement_rate,
+                    "is_achieved": is_achieved
+                }
+                service_data.append(day_data)
+                if day not in history:
+                    history[day] = {}
+                history[day][sname] = day_data
         result[sname] = {"dates": date_list, "data": service_data}
 
     save_sla_history(history)
@@ -415,8 +417,7 @@ def compute_sla_summary():
         all_rates = [d["achievement_rate"] for d in trend["data"]]
         avg_achievement = float(np.mean(all_rates))
         consecutive_days = compute_consecutive_achieved_days(trend)
-        all_rts = [d["avg_response_time"] for d in trend["data"]]
-        avg_rt = float(np.mean(all_rts))
+        today_avg_rt = latest["avg_response_time"]
 
         svc_row = services_df[services_df["service_name"] == sname]
         stype = svc_row["service_type"].values[0] if len(svc_row) > 0 else latest.get("service_type", "")
@@ -427,7 +428,7 @@ def compute_sla_summary():
             "service_type": stype,
             "sla_threshold": latest.get("sla_threshold", sla_cfg["sla_threshold"]),
             "target_availability": latest.get("target_availability", sla_cfg["target_availability"]),
-            "avg_response_time": round(avg_rt, 1),
+            "avg_response_time": round(today_avg_rt, 1),
             "achievement_rate": round(latest["achievement_rate"], 2),
             "week_avg_achievement": round(avg_achievement, 2),
             "is_achieved": latest["is_achieved"],
@@ -1032,42 +1033,27 @@ def render_dashboard_page():
 
         with sla_col3:
             top3_services = sla_summary_df.sort_values("achievement_rate", ascending=False).head(3)
-            top3_items = []
+            st.subheader("🏆 SLA 达成率排名 Top 3")
             for rank_idx, (_, svc) in enumerate(top3_services.iterrows()):
                 rank = rank_idx + 1
                 medal = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
-                rate_color = "#10B981" if svc["achievement_rate"] >= 99 else ("#F59E0B" if svc["achievement_rate"] >= 95 else "#EF4444")
-                top3_items.append(f"""
-                <div style="
-                    padding: 10px 14px;
-                    margin-bottom: {10 if rank_idx < 2 else 0}px;
-                    background-color: #F9FAFB;
-                    border-radius: 8px;
-                    border-left: 4px solid {rate_color};
-                ">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <span style="font-size: 16px;">{medal}</span>
-                            <span style="font-size: 14px; font-weight: 600; margin-left: 6px;">{svc['service_name']}</span>
-                        </div>
-                        <div style="font-size: 16px; font-weight: 700; color: {rate_color};">
-                            {svc['achievement_rate']:.2f}%
-                        </div>
-                    </div>
-                    <div style="font-size: 11px; color: #6B7280; margin-top: 2px;">
-                        {svc['service_type']} · 连续达标 {svc['consecutive_days']} 天
-                    </div>
-                </div>
-                """)
-            top3_html = "".join(top3_items)
-            st.markdown(f"""
-            <div style="padding: 20px; background-color: white; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-height: 280px;">
-                <div style="font-size: 14px; color: #6B7280; margin-bottom: 16px;">
-                    🏆 SLA 达成率排名 Top 3
-                </div>
-                {top3_html}
-            </div>
-            """, unsafe_allow_html=True)
+                rate_label = "🟢" if svc["achievement_rate"] >= 99 else ("🟡" if svc["achievement_rate"] >= 95 else "🔴")
+                col_rank_info, col_rate, col_days = st.columns([3, 2, 2])
+                with col_rank_info:
+                    st.write(f"{medal} **{svc['service_name']}**")
+                    st.caption(f"{svc['service_type']}")
+                with col_rate:
+                    st.metric(
+                        label="达成率",
+                        value=f"{svc['achievement_rate']:.2f}%"
+                    )
+                with col_days:
+                    st.metric(
+                        label="连续达标",
+                        value=f"{svc['consecutive_days']} 天"
+                    )
+                if rank_idx < 2:
+                    st.markdown("---")
 
     st.divider()
 
@@ -2427,20 +2413,15 @@ def render_sla_config_page():
         st.divider()
         st.subheader("📤 配置导入导出")
 
-        if st.button("📥 导出配置 JSON", use_container_width=True, key="export_sla_btn"):
-            json_str = export_sla_config_to_json(sla_config)
-            st.session_state["sla_export_data"] = json_str
-            st.success("✅ 配置已准备好导出！")
-
-        if "sla_export_data" in st.session_state:
-            st.download_button(
-                label="💾 下载配置文件",
-                data=st.session_state["sla_export_data"],
-                file_name=f"sla_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json",
-                use_container_width=True,
-                key="download_sla_cfg"
-            )
+        export_json_str = export_sla_config_to_json(sla_config)
+        st.download_button(
+            label="💾 导出配置 JSON",
+            data=export_json_str,
+            file_name=f"sla_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            use_container_width=True,
+            key="export_sla_direct"
+        )
 
         st.divider()
         st.subheader("📥 导入配置")
@@ -2456,7 +2437,6 @@ def render_sla_config_page():
                     if st.button("✅ 确认导入并覆盖", use_container_width=True, type="primary", key="confirm_import_sla"):
                         save_sla_config(imported_cfg)
                         st.success("🎉 配置已成功导入！")
-                        del st.session_state["sla_export_data"]
                         st.cache_data.clear()
                         st.rerun()
             except Exception as e:
@@ -2491,75 +2471,61 @@ def render_sla_config_page():
 
     st.divider()
 
-    col_actions1, col_actions2 = st.columns([3, 1])
-    with col_actions1:
-        st.subheader("📋 SLA 阈值配置表")
-    with col_actions2:
-        if st.button("💾 保存所有修改", use_container_width=True, type="primary", key="save_all_sla_cfg"):
-            save_sla_config(sla_config)
+    st.subheader("📋 SLA 阈值配置表（可直接编辑）")
+    config_df = pd.DataFrame([
+        {
+            "服务类型": stype,
+            "响应时间标准 (ms)": int(cfg["sla_threshold"]),
+            "目标可用性 (%)": float(cfg["target_availability"])
+        }
+        for stype, cfg in sorted(sla_config.items())
+    ])
+
+    edited_df = st.data_editor(
+        config_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "服务类型": st.column_config.TextColumn("服务类型", disabled=True),
+            "响应时间标准 (ms)": st.column_config.NumberColumn(
+                "响应时间标准 (ms)",
+                min_value=1,
+                max_value=10000,
+                step=1,
+                format="%d",
+                required=True,
+                help="该服务类型响应时间应小于此值才算达标"
+            ),
+            "目标可用性 (%)": st.column_config.NumberColumn(
+                "目标可用性 (%)",
+                min_value=50.0,
+                max_value=100.0,
+                step=0.01,
+                format="%.2f",
+                required=True,
+                help="在统计周期内请求响应达标比例的目标值"
+            )
+        },
+        key="sla_config_editor"
+    )
+
+    col_save1, col_save2 = st.columns([3, 1])
+    with col_save2:
+        if st.button("💾 保存配置修改", use_container_width=True, type="primary", key="save_edited_sla_cfg"):
+            new_config = {}
+            for _, row in edited_df.iterrows():
+                stype = row["服务类型"]
+                new_config[stype] = {
+                    "sla_threshold": int(row["响应时间标准 (ms)"]),
+                    "target_availability": float(row["目标可用性 (%)"])
+                }
+            save_sla_config(new_config)
             st.success("✅ 所有配置已保存！")
             st.cache_data.clear()
             st.rerun()
 
-    config_df = pd.DataFrame([
-        {
-            "服务类型": stype,
-            "响应时间标准 (ms)": cfg["sla_threshold"],
-            "目标可用性 (%)": cfg["target_availability"]
-        }
-        for stype, cfg in sla_config.items()
-    ])
-    st.dataframe(config_df, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("✏️ 逐项调整配置")
-
-    sorted_types = sorted(sla_config.keys())
-    for stype in sorted_types:
-        current = sla_config[stype]
-        with st.expander(f"📌 {stype}", expanded=False):
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                new_threshold = st.number_input(
-                    "响应时间 SLA 标准 (ms)",
-                    min_value=1,
-                    max_value=10000,
-                    value=int(current["sla_threshold"]),
-                    key=f"sla_th_{stype}",
-                    help=f"{stype} 的平均响应时间应小于此值才算达标"
-                )
-            with col2:
-                new_target = st.number_input(
-                    "目标可用性 (%)",
-                    min_value=50.0,
-                    max_value=100.0,
-                    value=float(current["target_availability"]),
-                    step=0.01,
-                    format="%.2f",
-                    key=f"sla_target_{stype}",
-                    help="在统计周期内请求响应达标比例的目标值"
-                )
-            with col3:
-                st.markdown("<div style='visibility:hidden;'>_</div>", unsafe_allow_html=True)
-                if st.button("💾 保存此项", key=f"save_sla_{stype}", use_container_width=True):
-                    sla_config[stype]["sla_threshold"] = new_threshold
-                    sla_config[stype]["target_availability"] = new_target
-                    save_sla_config(sla_config)
-                    st.success(f"✅ {stype} 配置已保存！")
-                    st.cache_data.clear()
-                    st.rerun()
-
-            if new_threshold != current["sla_threshold"] or new_target != current["target_availability"]:
-                sla_config[stype]["sla_threshold"] = new_threshold
-                sla_config[stype]["target_availability"] = new_target
-
-            st.markdown(f"""
-            <div style="margin-top: 8px; padding: 12px; background-color: #EFF6FF; border-radius: 6px; font-size: 13px;">
-                <strong>💡 配置说明：</strong><br>
-                该服务类型下的所有服务，在统计周期内响应时间 ≤ <strong>{new_threshold} ms</strong> 的请求比例 ≥ 
-                <strong>{new_target:.2f}%</strong>，即为 SLA 达标。
-            </div>
-            """, unsafe_allow_html=True)
+    st.info("💡 使用方法：直接在上方表格中修改数值，然后点击「保存配置修改」按钮即可。")
 
     st.divider()
     col_footer1, col_footer2 = st.columns(2)
@@ -2728,7 +2694,7 @@ def render_sla_stats_page():
     if show_trend and total_services > 0:
         st.subheader("📈 最近 7 天 SLA 达成率趋势")
 
-        trend_services = filtered_df.sort_values("achievement_rate", ascending=False).head(6)
+        trend_services = filtered_df.sort_values("achievement_rate", ascending=False)
         num_trend = len(trend_services)
         tcols_per_row = 3
         trows = (num_trend + tcols_per_row - 1) // tcols_per_row
@@ -2803,15 +2769,13 @@ def render_sla_stats_page():
             display_df = filtered_df.copy()
             display_df["达标状态"] = display_df["is_achieved"].apply(lambda x: "✅ 已达标" if x else "❌ 未达标")
             display_df = display_df[[
-                "service_name", "service_type", "sla_threshold",
-                "target_availability", "avg_response_time",
-                "achievement_rate", "week_avg_achievement",
+                "service_name", "sla_threshold",
+                "avg_response_time", "achievement_rate",
                 "consecutive_days", "达标状态"
             ]]
             display_df.columns = [
-                "服务名称", "服务类型", "SLA 标准值(ms)",
-                "目标可用性(%)", "实际平均值(ms)",
-                "达成率(%)", "周均达成率(%)",
+                "服务名称", "标准值(ms)",
+                "实际平均值(ms)", "达成率(%)",
                 "连续达标天数", "达标状态"
             ]
 
@@ -2834,7 +2798,7 @@ def render_sla_stats_page():
 
             styled_df = display_df.style \
                 .applymap(color_sla_status, subset=["达标状态"]) \
-                .applymap(color_rate, subset=["达成率(%)", "周均达成率(%)"])
+                .applymap(color_rate, subset=["达成率(%)"])
 
             st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
 
