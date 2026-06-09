@@ -377,7 +377,7 @@ def compute_load_level(utilization, capacity_config):
         return "空闲", "#3B82F6"
 
 
-def compute_capacity_metrics_for_service(service_row, thresholds, capacity_config, instance_cost, baseline_requests):
+def compute_capacity_metrics_for_service(service_row, thresholds, capacity_config, instance_cost):
     sname = service_row["service_name"]
     stype = service_row["service_type"]
     avg_rt = float(service_row["avg_response_time"])
@@ -387,7 +387,8 @@ def compute_capacity_metrics_for_service(service_row, thresholds, capacity_confi
     warning_th = th["warning_threshold"]
     critical_th = th["critical_threshold"]
 
-    baseline_req = baseline_requests.get(stype, 10000)
+    cost_info = instance_cost.get(stype, {"cost_per_instance_month": 1000, "capacity_unit": 10000})
+    baseline_req = cost_info.get("capacity_unit", 10000)
     request_utilization = min(1.0, request_count / baseline_req) if baseline_req > 0 else 0.0
 
     rt_ratio = avg_rt / warning_th if warning_th > 0 else 0.0
@@ -411,13 +412,18 @@ def compute_capacity_metrics_for_service(service_row, thresholds, capacity_confi
         bottleneck_severity = "接近"
 
     target_util = capacity_config["target_utilization"]
+    medium_th = capacity_config["medium_load_threshold"]
     recommended_instances = 0
     expected_perf_improvement = 0.0
     expansion_priority = "无需扩容"
     priority_score = 0
 
-    if overall_utilization > target_util:
-        raw_instances = math.ceil((overall_utilization / target_util) - 1)
+    trigger_expansion = (overall_utilization >= medium_th) or (rt_utilization > 0.7)
+
+    if trigger_expansion and overall_utilization > 0:
+        eff_target = max(target_util, overall_utilization * 0.6)
+        raw_instances = math.ceil((overall_utilization / eff_target) - 1)
+        raw_instances = max(1, raw_instances)
         recommended_instances = max(
             capacity_config["min_recommended_instances"],
             min(raw_instances, capacity_config["max_recommended_instances"])
@@ -439,7 +445,6 @@ def compute_capacity_metrics_for_service(service_row, thresholds, capacity_confi
             priority_score = 25
         priority_score += round(rt_utilization * 25, 0)
 
-    cost_info = instance_cost.get(stype, {"cost_per_instance_month": 1000, "capacity_unit": 10000})
     cost_per_instance = cost_info.get("cost_per_instance_month", 1000)
     estimated_monthly_cost = recommended_instances * cost_per_instance
     estimated_daily_cost = round(estimated_monthly_cost / 30, 2)
@@ -483,7 +488,7 @@ def compute_capacity_analysis(services_df, thresholds=None, capacity_config=None
     results = []
     for _, row in services_df.iterrows():
         metric = compute_capacity_metrics_for_service(
-            row, thresholds, capacity_config, instance_cost, DEFAULT_BASELINE_REQUESTS
+            row, thresholds, capacity_config, instance_cost
         )
         results.append(metric)
 
@@ -500,20 +505,30 @@ def get_capacity_warning_summary(capacity_df, capacity_config=None):
     if capacity_df.empty:
         return {
             "high_load_count": 0,
+            "strict_high_load_count": 0,
             "highest_risk_service": "",
             "highest_risk_utilization": 0.0,
             "bottleneck_count": 0,
             "near_bottleneck_count": 0,
+            "need_expansion_count": 0,
             "total_expansion_instances": 0,
             "total_estimated_cost_monthly": 0
         }
 
+    medium_th = capacity_config["medium_load_threshold"] * 100
     high_th = capacity_config["high_load_threshold"] * 100
-    high_load_df = capacity_df[capacity_df["overall_utilization"] >= high_th]
-    high_load_count = len(high_load_df)
+
+    medium_plus_df = capacity_df[capacity_df["overall_utilization"] >= medium_th]
+    high_load_count = len(medium_plus_df)
+
+    strict_high_df = capacity_df[capacity_df["overall_utilization"] >= high_th]
+    strict_high_load_count = len(strict_high_df)
 
     bottleneck_count = len(capacity_df[capacity_df["is_bottleneck"]])
     near_bottleneck_count = len(capacity_df[capacity_df["is_near_bottleneck"] & ~capacity_df["is_bottleneck"]])
+
+    need_expansion_df = capacity_df[capacity_df["recommended_instances"] > 0]
+    need_expansion_count = len(need_expansion_df)
 
     highest_risk_service = ""
     highest_risk_utilization = 0.0
@@ -527,10 +542,12 @@ def get_capacity_warning_summary(capacity_df, capacity_config=None):
 
     return {
         "high_load_count": high_load_count,
+        "strict_high_load_count": strict_high_load_count,
         "highest_risk_service": highest_risk_service,
         "highest_risk_utilization": highest_risk_utilization,
         "bottleneck_count": bottleneck_count,
         "near_bottleneck_count": near_bottleneck_count,
+        "need_expansion_count": need_expansion_count,
         "total_expansion_instances": total_expansion_instances,
         "total_estimated_cost_monthly": total_estimated_cost_monthly
     }
@@ -547,6 +564,111 @@ def export_capacity_report_json(capacity_df, capacity_config, warning_summary):
         service_report = row.to_dict()
         report["services"].append(service_report)
     return json.dumps(report, ensure_ascii=False, indent=2)
+
+
+def export_capacity_report_text(capacity_df, capacity_config, warning_summary):
+    lines = []
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines.append("=" * 70)
+    lines.append("              服 务 容 量 规 划 评 估 报 告")
+    lines.append("=" * 70)
+    lines.append(f"报告生成时间：{now_str}")
+    lines.append("")
+
+    lines.append("-" * 70)
+    lines.append("一、容量摘要")
+    lines.append("-" * 70)
+    lines.append(f"  监控服务总数：            {len(capacity_df)} 个")
+    lines.append(f"  中负载及以上服务数：      {warning_summary.get('high_load_count', 0)} 个")
+    lines.append(f"  高负载服务数：            {warning_summary.get('strict_high_load_count', 0)} 个")
+    lines.append(f"  接近瓶颈服务数：          {warning_summary.get('near_bottleneck_count', 0)} 个")
+    lines.append(f"  严重过载服务数：          {warning_summary.get('bottleneck_count', 0)} 个")
+    lines.append(f"  需扩容服务数：            {warning_summary.get('need_expansion_count', 0)} 个")
+    lines.append(f"  建议新增实例总数：        {warning_summary.get('total_expansion_instances', 0)} 个")
+    lines.append(f"  预估月度扩容成本：        ¥{warning_summary.get('total_estimated_cost_monthly', 0):,}")
+    lines.append(f"  预估年度扩容成本：        ¥{warning_summary.get('total_estimated_cost_monthly', 0) * 12:,}")
+    risk_svc = warning_summary.get('highest_risk_service', '')
+    risk_util = warning_summary.get('highest_risk_utilization', 0.0)
+    lines.append(f"  容量风险最高服务：        {risk_svc if risk_svc else '无'} ({risk_util:.1f}%)")
+    lines.append("")
+
+    lines.append("-" * 70)
+    lines.append("二、风险评估（按风险高低排序）")
+    lines.append("-" * 70)
+    if capacity_df.empty:
+        lines.append("  暂无数据")
+    else:
+        risk_rank = capacity_df.sort_values("overall_utilization", ascending=False)
+        for rank, (_, svc) in enumerate(risk_rank.iterrows(), 1):
+            util = svc["overall_utilization"]
+            bottleneck = svc["bottleneck_severity"] if svc["bottleneck_severity"] else "无"
+            lines.append(f"  {rank:>2}. {svc['service_name']:<20} [{svc['service_type']:<8}] 利用率：{util:>5.1f}%  负载：{svc['load_level']:<6} 瓶颈：{bottleneck}")
+    lines.append("")
+
+    lines.append("-" * 70)
+    lines.append("三、扩容建议")
+    lines.append("-" * 70)
+    need_exp = capacity_df[capacity_df["recommended_instances"] > 0]
+    if need_exp.empty:
+        lines.append("  🎉 当前所有服务容量充足，暂无扩容需求。")
+    else:
+        need_exp = need_exp.sort_values("priority_score", ascending=False)
+        for idx, (_, svc) in enumerate(need_exp.iterrows(), 1):
+            lines.append(f"  {idx}. 【{svc['expansion_priority']}优先级】{svc['service_name']} ({svc['service_type']})")
+            lines.append(f"      当前状态：负载={svc['load_level']}，总利用率={svc['overall_utilization']:.1f}%，请求量利用率={svc['request_utilization']:.1f}%，响应时间利用率={svc['rt_utilization']:.1f}%")
+            lines.append(f"      建议新增实例数：+{svc['recommended_instances']} 个")
+            lines.append(f"      预期性能提升：   {svc['expected_perf_improvement']:.1f}%")
+            lines.append(f"      单实例月成本：   ¥{svc['cost_per_instance_month']:,}")
+            lines.append(f"      月度扩容成本：   ¥{svc['estimated_monthly_cost']:,}  (日：¥{svc['estimated_daily_cost']:.0f} / 年：¥{svc['estimated_yearly_cost']:,})")
+            lines.append("")
+    lines.append("")
+
+    lines.append("-" * 70)
+    lines.append("四、成本汇总")
+    lines.append("-" * 70)
+    if not need_exp.empty:
+        total_monthly = int(need_exp["estimated_monthly_cost"].sum())
+        total_daily = round(total_monthly / 30, 2)
+        total_yearly = total_monthly * 12
+        total_inst = int(need_exp["recommended_instances"].sum())
+        lines.append(f"  需扩容服务数：      {len(need_exp)} 个")
+        lines.append(f"  建议新增实例总数：  {total_inst} 个")
+        lines.append(f"  日预估扩容成本：    ¥{total_daily:,.2f}")
+        lines.append(f"  月预估扩容成本：    ¥{total_monthly:,}")
+        lines.append(f"  年预估扩容成本：    ¥{total_yearly:,}")
+    else:
+        lines.append("  当前无需扩容，成本增量为 ¥0。")
+    lines.append("")
+
+    lines.append("-" * 70)
+    lines.append("五、当前容量阈值配置")
+    lines.append("-" * 70)
+    lines.append(f"  低负载阈值：         {capacity_config.get('low_load_threshold', 0):.2f}")
+    lines.append(f"  中负载阈值：         {capacity_config.get('medium_load_threshold', 0):.2f}")
+    lines.append(f"  高负载阈值：         {capacity_config.get('high_load_threshold', 0):.2f}")
+    lines.append(f"  严重过载阈值：       {capacity_config.get('critical_load_threshold', 0):.2f}")
+    lines.append(f"  请求量评分权重：     {capacity_config.get('capacity_score_weight_request', 0):.2f}")
+    lines.append(f"  响应时间评分权重：   {capacity_config.get('capacity_score_weight_rt', 0):.2f}")
+    lines.append(f"  目标利用率：         {capacity_config.get('target_utilization', 0):.2f}")
+    lines.append(f"  响应时间退化因子：   {capacity_config.get('rt_degradation_factor', 0):.2f}")
+    lines.append("")
+
+    lines.append("-" * 70)
+    lines.append("六、所有服务容量详情")
+    lines.append("-" * 70)
+    lines.append(f"  {'服务名称':<20} {'类型':<10} {'请求量':>10} {'响应时间(ms)':>12} {'利用率%':>8} {'评分':>6} {'负载等级':<8} {'建议扩容':>8}")
+    lines.append("  " + "-" * 96)
+    if not capacity_df.empty:
+        for _, svc in capacity_df.sort_values("overall_utilization", ascending=False).iterrows():
+            rec = f"+{svc['recommended_instances']}" if svc['recommended_instances'] > 0 else "-"
+            lines.append(f"  {svc['service_name']:<20} {svc['service_type']:<10} {svc['request_count']:>10,} {svc['avg_response_time']:>12.1f} {svc['overall_utilization']:>7.1f}% {svc['capacity_score']:>6.0f} {svc['load_level']:<8} {rec:>8}")
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append("                        — 报告结束 —")
+    lines.append("=" * 70)
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 def load_sla_history():
@@ -732,10 +854,10 @@ def generate_mock_data():
         {"service_name": "用户认证服务", "service_type": "认证服务", "avg_response_time": 85, "request_count": 8500},
         {"service_name": "MySQL 主库", "service_type": "数据库", "avg_response_time": 45, "request_count": 25000},
         {"service_name": "Redis 缓存", "service_type": "缓存服务", "avg_response_time": 8, "request_count": 50000},
-        {"service_name": "MongoDB", "service_type": "数据库", "avg_response_time": 65, "request_count": 12000},
+        {"service_name": "MongoDB", "service_type": "数据库", "avg_response_time": 90, "request_count": 18000},
         {"service_name": "文件存储服务", "service_type": "存储服务", "avg_response_time": 230, "request_count": 3200},
         {"service_name": "消息队列 Kafka", "service_type": "消息服务", "avg_response_time": 35, "request_count": 18000},
-        {"service_name": "搜索引擎 Elasticsearch", "service_type": "搜索服务", "avg_response_time": 180, "request_count": 6500},
+        {"service_name": "搜索引擎 Elasticsearch", "service_type": "搜索服务", "avg_response_time": 350, "request_count": 14000},
         {"service_name": "支付网关", "service_type": "支付服务", "avg_response_time": 450, "request_count": 2100},
         {"service_name": "邮件服务", "service_type": "通知服务", "avg_response_time": 320, "request_count": 4800},
         {"service_name": "短信服务", "service_type": "通知服务", "avg_response_time": 280, "request_count": 3600},
@@ -1228,15 +1350,15 @@ def render_dashboard_page():
 
     with col6:
         high_load_count = cap_summary["high_load_count"]
-        cap_label = "🔥 高负载服务"
+        cap_label = "🔥 中负载及以上服务"
         if high_load_count > 0:
-            cap_label = "🚨 高负载服务"
+            cap_label = "🚨 中负载及以上服务"
         st.metric(
             label=cap_label,
             value=f"{high_load_count} 个",
             delta=f"{high_load_count}",
             delta_color="inverse" if high_load_count > 0 else "normal",
-            help="当前处于高负载及严重过载状态的服务数量"
+            help="当前处于中负载、高负载及严重过载状态的服务数量（与容量风险最高采用同一套阈值标准）"
         )
 
     with col7:
@@ -3158,11 +3280,7 @@ def render_capacity_planning_page():
     capacity_config = load_capacity_config()
     instance_cost = load_instance_cost()
 
-    capacity_df = compute_capacity_analysis(services_df, thresholds, capacity_config, instance_cost)
-    warning_summary = get_capacity_warning_summary(capacity_df, capacity_config)
-
     all_load_levels = ["全部", "严重过载", "高负载", "中负载", "低负载", "空闲"]
-    all_service_types = ["全部"] + sorted(capacity_df["service_type"].unique().tolist()) if not capacity_df.empty else ["全部"]
 
     with st.sidebar:
         st.header("📊 容量规划")
@@ -3189,7 +3307,7 @@ def render_capacity_planning_page():
         )
         selected_service_type = st.selectbox(
             "服务类型",
-            all_service_types,
+            ["全部"] + sorted(thresholds.keys()),
             key="cap_filter_service_type"
         )
 
@@ -3293,7 +3411,7 @@ def render_capacity_planning_page():
             capacity_config["max_recommended_instances"] = int(new_max_inst)
 
         with st.expander("💰 实例成本配置", expanded=False):
-            st.caption("各服务类型单实例月度成本 (元)")
+            st.caption("各服务类型单实例月度成本 (元) 与 容量单位(单实例最大请求量)")
             cost_edited = {}
             all_types_sorted = sorted(instance_cost.keys())
             for st_idx, stype in enumerate(all_types_sorted):
@@ -3339,6 +3457,9 @@ def render_capacity_planning_page():
         st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         st.caption("💡 提示：数据为 Mock 数据")
 
+    capacity_df = compute_capacity_analysis(services_df, thresholds, capacity_config, instance_cost)
+    warning_summary = get_capacity_warning_summary(capacity_df, capacity_config)
+
     st.title("📊 服务容量规划")
     st.markdown("基于请求量和响应时间数据分析服务负载，给出容量评估和扩容建议")
     st.divider()
@@ -3349,7 +3470,7 @@ def render_capacity_planning_page():
     if selected_service_type != "全部" and not filtered_cap.empty:
         filtered_cap = filtered_cap[filtered_cap["service_type"] == selected_service_type]
 
-    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
+    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     with col_s1:
         st.metric(
             label="🚨 严重过载",
@@ -3366,11 +3487,17 @@ def render_capacity_planning_page():
         )
     with col_s3:
         st.metric(
-            label="🔥 高负载总数",
+            label="🔥 中负载及以上",
             value=f"{warning_summary['high_load_count']} 个",
-            help="当前处于高负载及以上状态的服务总数"
+            help="当前处于中负载、高负载及严重过载状态的服务总数（与首页采用同一阈值标准）"
         )
     with col_s4:
+        st.metric(
+            label="📌 需扩容服务",
+            value=f"{warning_summary['need_expansion_count']} 个",
+            help="达到扩容触发条件（中负载或响应时间利用率超70%）的服务数量"
+        )
+    with col_s5:
         high_risk_label = warning_summary['highest_risk_service'] if warning_summary['highest_risk_service'] else "无"
         high_risk_util = warning_summary['highest_risk_utilization']
         delta_label = f"{high_risk_util:.0f}%" if high_risk_label != "无" else None
@@ -3381,16 +3508,16 @@ def render_capacity_planning_page():
             delta_color="inverse",
             help="容量风险最高的服务名称及其资源利用率"
         )
-    with col_s5:
+    with col_s6:
         st.metric(
             label="➕ 建议扩容实例",
             value=f"{warning_summary['total_expansion_instances']} 个",
             help="所有需要扩容服务的建议新增实例总数"
         )
-    with col_s6:
+    with col_s7:
         cost_monthly = warning_summary['total_estimated_cost_monthly']
         st.metric(
-            label="💰 预估月度扩容成本",
+            label="💰 月度扩容成本",
             value=f"¥{cost_monthly:,}",
             help="所有扩容建议的月度成本估算合计"
         )
@@ -3405,32 +3532,70 @@ def render_capacity_planning_page():
             x_max = float(filtered_cap["request_count"].max()) * 1.15
             y_max = float(filtered_cap["avg_response_time"].max()) * 1.3
 
-            x_bottleneck = x_max * capacity_config["high_load_threshold"]
-            y_bottleneck = float(filtered_cap["warning_threshold"].max()) * capacity_config["high_load_threshold"] if not filtered_cap.empty else y_max * capacity_config["high_load_threshold"]
+            capacity_units = [instance_cost.get(st, {}).get("capacity_unit", 10000) for st in filtered_cap["service_type"].unique()]
+            warning_thresholds = [thresholds.get(st, {}).get("warning_threshold", 100) for st in filtered_cap["service_type"].unique()]
+            avg_capacity_unit = float(np.mean(capacity_units)) if capacity_units else 10000.0
+            avg_warning_th = float(np.mean(warning_thresholds)) if warning_thresholds else 100.0
+
+            medium_th = capacity_config["medium_load_threshold"]
+            high_th = capacity_config["high_load_threshold"]
+
+            x_risk_medium = avg_capacity_unit * medium_th
+            y_risk_medium = avg_warning_th * medium_th
+
+            x_bottleneck = min(avg_capacity_unit * high_th, x_max * 0.85)
+            y_bottleneck = min(avg_warning_th * high_th, y_max * 0.85)
+
+            x_max = max(x_max, x_bottleneck * 1.2)
+            y_max = max(y_max, y_bottleneck * 1.2)
 
             fig = go.Figure()
 
             fig.add_shape(
                 type="rect",
+                x0=x_risk_medium, y0=0,
+                x1=x_bottleneck, y1=y_risk_medium,
+                fillcolor="rgba(251, 191, 36, 0.06)",
+                line=dict(color="#F59E0B", width=1, dash="dash"),
+                layer="below"
+            )
+            fig.add_shape(
+                type="rect",
+                x0=0, y0=y_risk_medium,
+                x1=x_risk_medium, y1=y_bottleneck,
+                fillcolor="rgba(251, 191, 36, 0.06)",
+                line=dict(color="#F59E0B", width=1, dash="dash"),
+                layer="below"
+            )
+            fig.add_shape(
+                type="rect",
+                x0=x_risk_medium, y0=y_risk_medium,
+                x1=x_bottleneck, y1=y_bottleneck,
+                fillcolor="rgba(245, 158, 11, 0.10)",
+                line=dict(color="#F59E0B", width=1, dash="dash"),
+                layer="below"
+            )
+            fig.add_shape(
+                type="rect",
                 x0=x_bottleneck, y0=0,
                 x1=x_max, y1=y_bottleneck,
-                fillcolor="rgba(245, 158, 11, 0.08)",
-                line=dict(color="#F59E0B", width=1, dash="dash"),
+                fillcolor="rgba(252, 165, 165, 0.10)",
+                line=dict(color="#EF4444", width=1, dash="dash"),
                 layer="below"
             )
             fig.add_shape(
                 type="rect",
                 x0=0, y0=y_bottleneck,
                 x1=x_bottleneck, y1=y_max,
-                fillcolor="rgba(245, 158, 11, 0.08)",
-                line=dict(color="#F59E0B", width=1, dash="dash"),
+                fillcolor="rgba(252, 165, 165, 0.10)",
+                line=dict(color="#EF4444", width=1, dash="dash"),
                 layer="below"
             )
             fig.add_shape(
                 type="rect",
                 x0=x_bottleneck, y0=y_bottleneck,
                 x1=x_max, y1=y_max,
-                fillcolor="rgba(239, 68, 68, 0.12)",
+                fillcolor="rgba(239, 68, 68, 0.18)",
                 line=dict(color="#EF4444", width=2, dash="dash"),
                 layer="below"
             )
@@ -3473,19 +3638,37 @@ def render_capacity_planning_page():
                 ))
 
             fig.add_vline(
+                x=x_risk_medium,
+                line_dash="dash",
+                line_color="#F59E0B",
+                opacity=0.5,
+                line_width=1,
+                annotation_text="请求量中负载线",
+                annotation_position="top left"
+            )
+            fig.add_hline(
+                y=y_risk_medium,
+                line_dash="dash",
+                line_color="#F59E0B",
+                opacity=0.5,
+                line_width=1,
+                annotation_text="响应时间中负载线",
+                annotation_position="top right"
+            )
+            fig.add_vline(
                 x=x_bottleneck,
                 line_dash="dot",
-                line_color="#F59E0B",
-                opacity=0.6,
-                annotation_text="高请求量阈值",
+                line_color="#EF4444",
+                opacity=0.7,
+                annotation_text="请求量高负载线",
                 annotation_position="top right"
             )
             fig.add_hline(
                 y=y_bottleneck,
                 line_dash="dot",
-                line_color="#F59E0B",
-                opacity=0.6,
-                annotation_text="高响应时间阈值",
+                line_color="#EF4444",
+                opacity=0.7,
+                annotation_text="响应时间高负载线",
                 annotation_position="bottom right"
             )
 
@@ -3504,7 +3687,7 @@ def render_capacity_planning_page():
 
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption("💡 图中红色和黄色虚线区域为容量风险区域，位于右上红色区域的服务需重点关注")
+            st.caption("💡 黄色虚线=中负载阈值，红色虚线=高负载阈值；右上红色高风险区域内的服务需优先关注")
         else:
             st.info("暂无符合筛选条件的数据")
 
@@ -3754,10 +3937,11 @@ def render_capacity_planning_page():
 
     st.divider()
     st.subheader("📤 导出容量评估报告")
+    st.caption("三种导出格式范围一致，均为全部服务的完整容量评估数据")
 
-    export_col1, export_col2, export_col3 = st.columns([1, 1, 4])
+    export_col1, export_col2, export_col3 = st.columns(3)
     with export_col1:
-        csv_display = filtered_cap[[
+        csv_display = capacity_df[[
             "service_name", "service_type", "load_level",
             "avg_response_time", "request_count",
             "request_utilization", "rt_utilization", "overall_utilization",
@@ -3790,6 +3974,15 @@ def render_capacity_planning_page():
             data=json_data,
             file_name=f"capacity_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             mime="application/json",
+            use_container_width=True
+        )
+    with export_col3:
+        text_data = export_capacity_report_text(capacity_df, capacity_config, warning_summary)
+        st.download_button(
+            label="📄 导出完整报告",
+            data=text_data,
+            file_name=f"capacity_full_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain;charset=utf-8",
             use_container_width=True
         )
 

@@ -47,12 +47,12 @@
     "MongoDB": {
       "service_name": "MongoDB",
       "service_type": "数据库",
-      "avg_response_time": 65.8,
+      "avg_response_time": 90.0,
       "sla_threshold": 50,
       "target_availability": 99.99,
-      "total_requests": 12000,
-      "success_requests": 88,
-      "achievement_rate": 0.74,
+      "total_requests": 18000,
+      "success_requests": 0,
+      "achievement_rate": 0.0,
       "is_achieved": false
     },
     "文件存储服务": {
@@ -80,12 +80,12 @@
     "搜索引擎 Elasticsearch": {
       "service_name": "搜索引擎 Elasticsearch",
       "service_type": "搜索服务",
-      "avg_response_time": 179.8,
+      "avg_response_time": 350.0,
       "sla_threshold": 200,
       "target_availability": 99.0,
-      "total_requests": 6500,
-      "success_requests": 5627,
-      "achievement_rate": 86.57,
+      "total_requests": 14000,
+      "success_requests": 0,
+      "achievement_rate": 0.0,
       "is_achieved": false
     },
     "支付网关": {
