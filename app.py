@@ -314,6 +314,118 @@ def get_status_for_row(row, thresholds):
     return get_service_status(row["avg_response_time"], th["warning_threshold"], th["critical_threshold"])
 
 
+def generate_trend_data(service_name, service_type, base_rt, time_range="24h", granularity="hour"):
+    np.random.seed(hash(service_name) % 2**32)
+
+    if time_range == "24h":
+        if granularity == "hour":
+            num_points = 24
+            time_points = [datetime.now() - timedelta(hours=i) for i in range(num_points - 1, -1, -1)]
+        else:
+            num_points = 96
+            time_points = [datetime.now() - timedelta(minutes=15 * i) for i in range(num_points - 1, -1, -1)]
+    else:
+        if granularity == "day":
+            num_points = 7
+            time_points = [datetime.now() - timedelta(days=i) for i in range(num_points - 1, -1, -1)]
+        else:
+            num_points = 7 * 24
+            time_points = [datetime.now() - timedelta(hours=i) for i in range(num_points - 1, -1, -1)]
+
+    volatility = np.random.uniform(0.05, 0.35)
+    trend = np.random.uniform(-0.02, 0.02)
+    daily_pattern = np.sin(np.linspace(0, 2 * np.pi, num_points)) * 0.15
+
+    response_times = []
+    for i in range(num_points):
+        noise = np.random.normal(0, volatility * base_rt)
+        trend_component = trend * i * base_rt
+        pattern_component = daily_pattern[i] * base_rt
+        rt = base_rt + noise + trend_component + pattern_component
+        if np.random.random() < 0.05:
+            rt *= np.random.uniform(1.5, 3.0)
+        rt = max(1, rt)
+        response_times.append(round(rt, 1))
+
+    df = pd.DataFrame({
+        "timestamp": time_points,
+        "service_name": service_name,
+        "service_type": service_type,
+        "response_time": response_times
+    })
+    return df
+
+
+def generate_all_trends_data(time_range="24h", granularity="hour"):
+    services_df = generate_mock_data()
+    all_data = []
+    for _, row in services_df.iterrows():
+        trend_df = generate_trend_data(
+            row["service_name"],
+            row["service_type"],
+            row["avg_response_time"],
+            time_range,
+            granularity
+        )
+        all_data.append(trend_df)
+    return pd.concat(all_data, ignore_index=True)
+
+
+def compute_performance_metrics(trend_df):
+    if trend_df.empty:
+        return {}
+    rts = trend_df["response_time"].values
+    mean_rt = float(np.mean(rts))
+    max_rt = float(np.max(rts))
+    min_rt = float(np.min(rts))
+    std_rt = float(np.std(rts))
+    volatility = (std_rt / mean_rt * 100) if mean_rt > 0 else 0
+    stability_score = max(0, 100 - volatility * 1.5)
+    return {
+        "avg_response_time": round(mean_rt, 1),
+        "max_response_time": round(max_rt, 1),
+        "min_response_time": round(min_rt, 1),
+        "volatility": round(volatility, 2),
+        "stability_score": round(stability_score, 1),
+        "std_response_time": round(std_rt, 1)
+    }
+
+
+def detect_anomalies(trend_df, threshold_z=2.0):
+    if trend_df.empty:
+        return trend_df
+    rts = trend_df["response_time"].values
+    mean = np.mean(rts)
+    std = np.std(rts)
+    if std == 0:
+        anomalies = trend_df.iloc[0:0]
+    else:
+        z_scores = np.abs((rts - mean) / std)
+        anomalies = trend_df[z_scores > threshold_z].copy()
+    return anomalies
+
+
+def get_top_volatile_services(top_n=5):
+    trends_24h = generate_all_trends_data("24h", "hour")
+    services_df = generate_mock_data()
+    volatility_list = []
+    for sname in trends_24h["service_name"].unique():
+        sdf = trends_24h[trends_24h["service_name"] == sname]
+        metrics = compute_performance_metrics(sdf)
+        stype = services_df[services_df["service_name"] == sname]["service_type"].values[0]
+        volatility_list.append({
+            "service_name": sname,
+            "service_type": stype,
+            "volatility": metrics.get("volatility", 0),
+            "stability_score": metrics.get("stability_score", 0),
+            "avg_response_time": metrics.get("avg_response_time", 0),
+            "max_response_time": metrics.get("max_response_time", 0)
+        })
+    volatility_df = pd.DataFrame(volatility_list)
+    volatility_df = volatility_df.sort_values("volatility", ascending=False).head(top_n)
+    return volatility_df
+
+
 def render_dashboard_page():
     df = generate_mock_data()
     thresholds = load_thresholds()
@@ -376,6 +488,10 @@ def render_dashboard_page():
 
         if st.button("📋 查看告警历史", use_container_width=True, type="primary" if unresolved_count > 0 else "secondary", key="sidebar_alert_btn"):
             st.session_state["page"] = "alerts"
+            st.rerun()
+
+        if st.button("📈 性能趋势分析", use_container_width=True, type="secondary", key="sidebar_trend_btn"):
+            st.session_state["page"] = "trend"
             st.rerun()
 
         st.divider()
@@ -591,6 +707,47 @@ def render_dashboard_page():
                 hide_index=True
             )
 
+        st.divider()
+
+        st.subheader("🔥 性能波动排行榜 Top5")
+        top_volatile = get_top_volatile_services(5)
+        if not top_volatile.empty:
+            for idx, row in top_volatile.iterrows():
+                rank = idx + 1
+                volatility = row["volatility"]
+                if volatility >= 30:
+                    color = "#EF4444"
+                elif volatility >= 15:
+                    color = "#F59E0B"
+                else:
+                    color = "#10B981"
+                st.markdown(f"""
+                <div style="
+                    padding: 8px 10px;
+                    border-radius: 6px;
+                    margin-bottom: 6px;
+                    background-color: white;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                    border-left: 3px solid {color};
+                ">
+                    <div style="font-size: 12px; color: #6B7280;">
+                        🏆 第 {rank} 名
+                    </div>
+                    <div style="font-size: 13px; font-weight: 600;">
+                        {row["service_name"]}
+                    </div>
+                    <div style="font-size: 11px; color: #6B7280;">
+                        波动率: <span style="color: {color}; font-weight: 600;">{volatility:.1f}%</span>
+                        | 稳定: {row["stability_score"]:.0f}分
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            if st.button("📈 查看详细趋势分析", use_container_width=True, type="secondary", key="go_to_trend"):
+                st.session_state["page"] = "trend"
+                st.rerun()
+        else:
+            st.info("暂无波动数据")
+
     st.divider()
     st.subheader("📋 详细数据")
 
@@ -619,6 +776,10 @@ def render_alerts_page():
 
         if st.button("← 返回监控首页", use_container_width=True):
             st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        if st.button("📈 性能趋势分析", use_container_width=True, type="secondary", key="alt_sidebar_trend_btn"):
+            st.session_state["page"] = "trend"
             st.rerun()
 
         st.divider()
@@ -872,6 +1033,333 @@ def render_alerts_page():
         st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
+def render_trend_page():
+    services_df = generate_mock_data()
+    all_service_names = sorted(services_df["service_name"].tolist())
+
+    with st.sidebar:
+        st.header("📈 趋势分析")
+
+        if st.button("← 返回监控首页", use_container_width=True, key="trend_back_btn"):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        if st.button("🔔 查看告警历史", use_container_width=True, type="secondary", key="trend_alert_btn"):
+            st.session_state["page"] = "alerts"
+            st.rerun()
+
+        st.divider()
+
+        st.subheader("🕒 时间范围")
+        time_range = st.radio(
+            "选择分析周期",
+            options=["24h", "7d"],
+            format_func=lambda x: "过去 24 小时" if x == "24h" else "过去 7 天",
+            help="选择趋势分析的时间范围",
+            horizontal=True
+        )
+
+        st.subheader("⏱️ 时间粒度")
+        if time_range == "24h":
+            granularity = st.radio(
+                "数据粒度",
+                options=["hour", "15min"],
+                format_func=lambda x: "按小时" if x == "hour" else "按 15 分钟",
+                help="选择数据点的时间间隔",
+                horizontal=True
+            )
+        else:
+            granularity = st.radio(
+                "数据粒度",
+                options=["day", "hour"],
+                format_func=lambda x: "按天" if x == "day" else "按小时",
+                help="选择数据点的时间间隔",
+                horizontal=True
+            )
+
+        st.divider()
+        st.subheader("🔧 异常检测阈值")
+        z_threshold = st.slider(
+            "Z-Score 阈值",
+            min_value=1.0,
+            max_value=3.5,
+            value=2.0,
+            step=0.1,
+            help="标准差倍数，数值越大异常检测越严格"
+        )
+
+        st.divider()
+        st.caption(f"📊 数据生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption("💡 提示：趋势数据为模拟生成")
+
+    st.title("📈 服务性能趋势分析")
+    st.markdown("分析各服务响应时间的变化趋势，快速识别性能波动和异常")
+    st.divider()
+
+    st.subheader("🔍 选择服务进行对比分析")
+    col_sel1, col_sel2 = st.columns([3, 1])
+    with col_sel1:
+        selected_services = st.multiselect(
+            "选择要分析的服务（可多选对比）",
+            options=all_service_names,
+            default=all_service_names[:3],
+            help="选择一个或多个服务进行趋势对比分析"
+        )
+    with col_sel2:
+        st.markdown("<div style='visibility:hidden;'>_</div>", unsafe_allow_html=True)
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            if st.button("全选", use_container_width=True):
+                st.session_state["trend_selected"] = all_service_names
+                selected_services = all_service_names
+                st.rerun()
+        with col_b2:
+            if st.button("清空", use_container_width=True):
+                st.session_state["trend_selected"] = []
+                selected_services = []
+                st.rerun()
+
+    if not selected_services:
+        st.warning("⚠️ 请至少选择一个服务进行趋势分析")
+        st.info("💡 提示：从上方下拉框中选择一个或多个服务，或点击「全选」按钮选择所有服务")
+        return
+
+    trends_data = generate_all_trends_data(time_range, granularity)
+    filtered_trends = trends_data[trends_data["service_name"].isin(selected_services)].copy()
+
+    st.divider()
+
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+    all_metrics = []
+    for sname in selected_services:
+        sdf = filtered_trends[filtered_trends["service_name"] == sname]
+        m = compute_performance_metrics(sdf)
+        m["service_name"] = sname
+        all_metrics.append(m)
+    metrics_df = pd.DataFrame(all_metrics)
+
+    avg_of_avg = metrics_df["avg_response_time"].mean() if len(metrics_df) > 0 else 0
+    overall_max = metrics_df["max_response_time"].max() if len(metrics_df) > 0 else 0
+    overall_min = metrics_df["min_response_time"].min() if len(metrics_df) > 0 else 0
+    avg_volatility = metrics_df["volatility"].mean() if len(metrics_df) > 0 else 0
+    avg_stability = metrics_df["stability_score"].mean() if len(metrics_df) > 0 else 0
+
+    with col_m1:
+        st.metric(
+            label="📊 平均响应时间",
+            value=f"{avg_of_avg:.1f} ms",
+            help="所选服务的平均响应时间（加权平均）"
+        )
+    with col_m2:
+        st.metric(
+            label="⏫ 最大响应时间",
+            value=f"{overall_max:.1f} ms",
+            help="所选服务中的最大响应时间",
+            delta_color="inverse"
+        )
+    with col_m3:
+        st.metric(
+            label="⏬ 最小响应时间",
+            value=f"{overall_min:.1f} ms",
+            help="所选服务中的最小响应时间"
+        )
+    with col_m4:
+        vol_color = "normal" if avg_volatility < 15 else ("inverse" if avg_volatility >= 30 else "off")
+        st.metric(
+            label="📉 平均波动率",
+            value=f"{avg_volatility:.2f}%",
+            delta=f"{avg_volatility:.2f}%",
+            delta_color=vol_color,
+            help="标准差/平均值的百分比，越低越稳定"
+        )
+    with col_m5:
+        stability_label = "🟢 优秀" if avg_stability >= 85 else ("🟡 一般" if avg_stability >= 70 else "🔴 较差")
+        st.metric(
+            label=f"⭐ 稳定性评分 {stability_label}",
+            value=f"{avg_stability:.1f} 分",
+            help="满分 100 分，基于波动率计算"
+        )
+
+    st.divider()
+
+    st.subheader("📊 响应时间趋势图")
+    st.caption("💡 提示：支持鼠标框选缩放，悬停查看详细数据，双击图表重置缩放")
+
+    color_palette = px.colors.qualitative.Plotly
+
+    fig = px.line(
+        filtered_trends,
+        x="timestamp",
+        y="response_time",
+        color="service_name",
+        color_discrete_sequence=color_palette,
+        markers=True,
+        hover_data={
+            "service_name": True,
+            "service_type": True,
+            "response_time": ":.1f",
+            "timestamp": "|%Y-%m-%d %H:%M:%S"
+        }
+    )
+
+    for idx, sname in enumerate(selected_services):
+        sdf = filtered_trends[filtered_trends["service_name"] == sname]
+        s_mean = sdf["response_time"].mean()
+        color = color_palette[idx % len(color_palette)]
+        fig.add_hline(
+            y=s_mean,
+            line_dash="dash",
+            line_width=1.5,
+            line_color=color,
+            opacity=0.6,
+            annotation_text=f"{sname} 平均值: {s_mean:.1f} ms",
+            annotation_position="top right",
+            annotation_font_size=10,
+            annotation_font_color=color
+        )
+
+        anomalies = detect_anomalies(sdf, z_threshold)
+        if not anomalies.empty:
+            fig.add_trace(
+                px.scatter(
+                    anomalies,
+                    x="timestamp",
+                    y="response_time",
+                    color_discrete_sequence=["#EF4444"],
+                ).data[0].update(
+                    marker=dict(size=12, symbol="diamond", color="#EF4444", line=dict(width=2, color="white")),
+                    name=f"{sname} ⚠️ 异常点",
+                    hovertemplate=f"<b>{sname} - 异常点</b><br>" +
+                                  "时间：%{x|%Y-%m-%d %H:%M:%S}<br>" +
+                                  "响应时间：%{y:.1f} ms<br>" +
+                                  "<extra></extra>"
+                )
+            )
+
+    fig.update_layout(
+        height=550,
+        xaxis_title="时间",
+        yaxis_title="响应时间 (ms)",
+        legend_title="服务名称",
+        hovermode="x unified",
+        dragmode="zoom",
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.08)",
+            rangeslider=dict(visible=True, thickness=0.05),
+            type="date"
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.08)",
+            zeroline=True,
+            zerolinecolor="rgba(0,0,0,0.2)"
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(l=20, r=20, t=40, b=100)
+    )
+
+    fig.update_traces(
+        line=dict(width=2),
+        marker=dict(size=5),
+        hovertemplate="<b>%{customdata[0]}</b><br>" +
+                      "服务类型：%{customdata[1]}<br>" +
+                      "时间：%{x|%Y-%m-%d %H:%M:%S}<br>" +
+                      "响应时间：%{y:.1f} ms<extra></extra>"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("📋 各服务性能指标对比")
+    if len(metrics_df) > 0:
+        display_metrics = metrics_df[[
+            "service_name", "avg_response_time", "max_response_time",
+            "min_response_time", "std_response_time", "volatility", "stability_score"
+        ]].copy()
+        display_metrics.columns = [
+            "服务名称", "平均响应时间(ms)", "最大响应时间(ms)",
+            "最小响应时间(ms)", "标准差(ms)", "波动率(%)", "稳定性评分"
+        ]
+
+        def highlight_volatility(val):
+            if val >= 30:
+                return "background-color: #FEE2E2; color: #991B1B; font-weight: 600;"
+            elif val >= 15:
+                return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+            else:
+                return "background-color: #D1FAE5; color: #065F46; font-weight: 600;"
+
+        def highlight_stability(val):
+            if val >= 85:
+                return "background-color: #D1FAE5; color: #065F46; font-weight: 600;"
+            elif val >= 70:
+                return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+            else:
+                return "background-color: #FEE2E2; color: #991B1B; font-weight: 600;"
+
+        styled_metrics = display_metrics.style \
+            .applymap(highlight_volatility, subset=["波动率(%)"]) \
+            .applymap(highlight_stability, subset=["稳定性评分"])
+
+        st.dataframe(
+            styled_metrics,
+            use_container_width=True,
+            hide_index=True,
+            height=min(400, 40 + len(display_metrics) * 35)
+        )
+
+    st.divider()
+
+    if len(selected_services) >= 2:
+        st.subheader("🔀 波动率对比")
+        vol_chart_df = metrics_df[["service_name", "volatility", "stability_score"]].copy()
+        fig_vol = px.bar(
+            vol_chart_df,
+            x="service_name",
+            y="volatility",
+            color="stability_score",
+            color_continuous_scale="RdYlGn",
+            range_color=[0, 100],
+            text="volatility",
+            title="各服务波动率对比 (%)",
+            hover_data={
+                "service_name": True,
+                "volatility": ":.2f",
+                "stability_score": ":.1f"
+            }
+        )
+        fig_vol.update_layout(
+            height=400,
+            xaxis_title="服务名称",
+            yaxis_title="波动率 (%)",
+            coloraxis_colorbar=dict(title="稳定性评分")
+        )
+        fig_vol.update_traces(
+            texttemplate="%{text:.2f}%",
+            textposition="outside",
+            hovertemplate="<b>%{x}</b><br>" +
+                          "波动率：%{y:.2f}%<br>" +
+                          "稳定性评分：%{marker.color:.1f} 分<extra></extra>"
+        )
+        st.plotly_chart(fig_vol, use_container_width=True)
+
+        st.divider()
+
+    col_footer1, col_footer2 = st.columns(2)
+    with col_footer1:
+        st.caption("💡 使用说明：趋势数据为模拟生成，包含每日周期性波动、随机噪声和偶发异常尖峰")
+    with col_footer2:
+        st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
 def main():
     if "page" not in st.session_state:
         st.session_state["page"] = "dashboard"
@@ -880,6 +1368,8 @@ def main():
         render_dashboard_page()
     elif st.session_state["page"] == "alerts":
         render_alerts_page()
+    elif st.session_state["page"] == "trend":
+        render_trend_page()
     else:
         render_dashboard_page()
 
