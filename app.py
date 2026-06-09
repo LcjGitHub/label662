@@ -712,8 +712,9 @@ def render_dashboard_page():
         st.subheader("🔥 性能波动排行榜 Top5")
         top_volatile = get_top_volatile_services(5)
         if not top_volatile.empty:
-            for idx, row in top_volatile.iterrows():
-                rank = idx + 1
+            ranked_services = top_volatile.reset_index(drop=True)
+            for rank_idx, row in ranked_services.iterrows():
+                rank = rank_idx + 1
                 volatility = row["volatility"]
                 if volatility >= 30:
                     color = "#EF4444"
@@ -1037,6 +1038,9 @@ def render_trend_page():
     services_df = generate_mock_data()
     all_service_names = sorted(services_df["service_name"].tolist())
 
+    if "trend_selected_services" not in st.session_state:
+        st.session_state["trend_selected_services"] = all_service_names[:3]
+
     with st.sidebar:
         st.header("📈 趋势分析")
 
@@ -1061,13 +1065,8 @@ def render_trend_page():
 
         st.subheader("⏱️ 时间粒度")
         if time_range == "24h":
-            granularity = st.radio(
-                "数据粒度",
-                options=["hour", "15min"],
-                format_func=lambda x: "按小时" if x == "hour" else "按 15 分钟",
-                help="选择数据点的时间间隔",
-                horizontal=True
-            )
+            granularity = "hour"
+            st.info("24 小时模式：按小时展示（24 个数据点）")
         else:
             granularity = st.radio(
                 "数据粒度",
@@ -1102,21 +1101,22 @@ def render_trend_page():
         selected_services = st.multiselect(
             "选择要分析的服务（可多选对比）",
             options=all_service_names,
-            default=all_service_names[:3],
-            help="选择一个或多个服务进行趋势对比分析"
+            default=st.session_state["trend_selected_services"],
+            help="选择一个或多个服务进行趋势对比分析",
+            key="trend_multiselect"
         )
+        if selected_services != st.session_state["trend_selected_services"]:
+            st.session_state["trend_selected_services"] = selected_services
     with col_sel2:
         st.markdown("<div style='visibility:hidden;'>_</div>", unsafe_allow_html=True)
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            if st.button("全选", use_container_width=True):
-                st.session_state["trend_selected"] = all_service_names
-                selected_services = all_service_names
+            if st.button("全选", use_container_width=True, key="trend_select_all"):
+                st.session_state["trend_selected_services"] = all_service_names
                 st.rerun()
         with col_b2:
-            if st.button("清空", use_container_width=True):
-                st.session_state["trend_selected"] = []
-                selected_services = []
+            if st.button("清空", use_container_width=True, key="trend_clear_all"):
+                st.session_state["trend_selected_services"] = []
                 st.rerun()
 
     if not selected_services:
@@ -1129,7 +1129,6 @@ def render_trend_page():
 
     st.divider()
 
-    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
     all_metrics = []
     for sname in selected_services:
         sdf = filtered_trends[filtered_trends["service_name"] == sname]
@@ -1137,6 +1136,9 @@ def render_trend_page():
         m["service_name"] = sname
         all_metrics.append(m)
     metrics_df = pd.DataFrame(all_metrics)
+
+    st.subheader(f"📊 性能汇总指标（共 {len(selected_services)} 个服务）")
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 
     avg_of_avg = metrics_df["avg_response_time"].mean() if len(metrics_df) > 0 else 0
     overall_max = metrics_df["max_response_time"].max() if len(metrics_df) > 0 else 0
@@ -1146,39 +1148,86 @@ def render_trend_page():
 
     with col_m1:
         st.metric(
-            label="📊 平均响应时间",
+            label="📊 平均响应时间（汇总）",
             value=f"{avg_of_avg:.1f} ms",
-            help="所选服务的平均响应时间（加权平均）"
+            help=f"所选 {len(selected_services)} 个服务的平均响应时间均值"
         )
     with col_m2:
         st.metric(
-            label="⏫ 最大响应时间",
+            label="⏫ 最大响应时间（汇总）",
             value=f"{overall_max:.1f} ms",
-            help="所选服务中的最大响应时间",
+            help=f"所选 {len(selected_services)} 个服务中的最大响应时间",
             delta_color="inverse"
         )
     with col_m3:
         st.metric(
-            label="⏬ 最小响应时间",
+            label="⏬ 最小响应时间（汇总）",
             value=f"{overall_min:.1f} ms",
-            help="所选服务中的最小响应时间"
+            help=f"所选 {len(selected_services)} 个服务中的最小响应时间"
         )
     with col_m4:
         vol_color = "normal" if avg_volatility < 15 else ("inverse" if avg_volatility >= 30 else "off")
         st.metric(
-            label="📉 平均波动率",
+            label="📉 平均波动率（汇总）",
             value=f"{avg_volatility:.2f}%",
             delta=f"{avg_volatility:.2f}%",
             delta_color=vol_color,
-            help="标准差/平均值的百分比，越低越稳定"
+            help=f"所选 {len(selected_services)} 个服务波动率的平均值"
         )
     with col_m5:
         stability_label = "🟢 优秀" if avg_stability >= 85 else ("🟡 一般" if avg_stability >= 70 else "🔴 较差")
         st.metric(
-            label=f"⭐ 稳定性评分 {stability_label}",
+            label=f"⭐ 稳定性评分 {stability_label}（汇总）",
             value=f"{avg_stability:.1f} 分",
-            help="满分 100 分，基于波动率计算"
+            help=f"所选 {len(selected_services)} 个服务稳定性评分的平均值"
         )
+
+    if len(selected_services) >= 1:
+        st.divider()
+        st.subheader("📋 各服务性能指标")
+        num_services = len(selected_services)
+        for sidx in range(0, num_services, 1):
+            sname = selected_services[sidx]
+            s_metrics = metrics_df[metrics_df["service_name"] == sname].iloc[0]
+            st.markdown(f"#### 🔹 {sname}")
+            col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+            with col_s1:
+                st.metric(
+                    label="平均响应时间",
+                    value=f"{s_metrics['avg_response_time']:.1f} ms",
+                    help=f"{sname} 的平均响应时间"
+                )
+            with col_s2:
+                st.metric(
+                    label="最大响应时间",
+                    value=f"{s_metrics['max_response_time']:.1f} ms",
+                    help=f"{sname} 的最大响应时间",
+                    delta_color="inverse"
+                )
+            with col_s3:
+                st.metric(
+                    label="最小响应时间",
+                    value=f"{s_metrics['min_response_time']:.1f} ms",
+                    help=f"{sname} 的最小响应时间"
+                )
+            with col_s4:
+                s_vol = s_metrics["volatility"]
+                s_vol_color = "normal" if s_vol < 15 else ("inverse" if s_vol >= 30 else "off")
+                st.metric(
+                    label="波动率",
+                    value=f"{s_vol:.2f}%",
+                    delta=f"{s_vol:.2f}%",
+                    delta_color=s_vol_color,
+                    help=f"{sname} 的波动率（标准差/均值）"
+                )
+            with col_s5:
+                s_stab = s_metrics["stability_score"]
+                s_stab_label = "🟢 优秀" if s_stab >= 85 else ("🟡 一般" if s_stab >= 70 else "🔴 较差")
+                st.metric(
+                    label=f"稳定性评分 {s_stab_label}",
+                    value=f"{s_stab:.1f} 分",
+                    help=f"{sname} 的稳定性评分"
+                )
 
     st.divider()
 
