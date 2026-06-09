@@ -1,2 +1,2 @@
 ﻿alert_id,service_name,service_type,alert_level,alert_time,response_time,warning_threshold,critical_threshold,status,resolved_time
-ALT202606090922353725,Redis 缓存,缓存服务,警告,2026-06-09 09:22:35,8.0,5.0,10.0,已处理,2026-06-09 09:22:35
+ALT202606091045235983,图像识别服务,AI 服务,警告,2026-06-09 10:45:23,1200,1000.0,2000.0,未处理,

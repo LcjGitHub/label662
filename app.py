@@ -27,22 +27,26 @@ st.markdown("""
         padding: 15px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
-    .alert-metric-normal {
-        border-left: 4px solid #10B981;
-    }
-    .alert-metric-warning {
-        border-left: 4px solid #F59E0B;
-    }
-    .alert-metric-critical {
-        border-left: 4px solid #EF4444;
-    }
-    .clickable-metric {
+    .clickable-card {
         cursor: pointer;
         transition: all 0.2s;
+        border-radius: 8px;
+        padding: 12px 16px;
+        background-color: white;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
-    .clickable-metric:hover {
+    .clickable-card:hover {
         transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .clickable-card-warning {
+        border-left: 4px solid #F59E0B;
+    }
+    .clickable-card-critical {
+        border-left: 4px solid #EF4444;
+    }
+    .clickable-card-normal {
+        border-left: 4px solid #10B981;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -50,6 +54,7 @@ st.markdown("""
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 ALERTS_CSV = os.path.join(DATA_DIR, "alerts.csv")
 THRESHOLDS_CSV = os.path.join(DATA_DIR, "thresholds.csv")
+SERVICE_STATUS_CSV = os.path.join(DATA_DIR, "service_status.csv")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -60,6 +65,8 @@ ALERT_COLUMNS = [
 ]
 
 THRESHOLD_COLUMNS = ["service_type", "warning_threshold", "critical_threshold"]
+
+SERVICE_STATUS_COLUMNS = ["service_name", "last_status", "last_check_time"]
 
 DEFAULT_THRESHOLDS = {
     "网关服务": {"warning_threshold": 200, "critical_threshold": 500},
@@ -93,6 +100,11 @@ def init_csv_files():
                     "warning_threshold": thresholds["warning_threshold"],
                     "critical_threshold": thresholds["critical_threshold"]
                 })
+
+    if not os.path.exists(SERVICE_STATUS_CSV):
+        with open(SERVICE_STATUS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=SERVICE_STATUS_COLUMNS)
+            writer.writeheader()
 
 
 init_csv_files()
@@ -166,6 +178,35 @@ def batch_resolve_alerts(alert_ids):
         df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
 
 
+def load_service_status():
+    if os.path.exists(SERVICE_STATUS_CSV):
+        dtype_map = {
+            "service_name": str, "last_status": str, "last_check_time": str
+        }
+        df = pd.read_csv(SERVICE_STATUS_CSV, encoding="utf-8-sig", dtype=dtype_map, keep_default_na=False)
+        status_map = {}
+        for _, row in df.iterrows():
+            status_map[row["service_name"]] = {
+                "last_status": row["last_status"],
+                "last_check_time": row["last_check_time"]
+            }
+        return status_map
+    return {}
+
+
+def save_service_status(status_map):
+    with open(SERVICE_STATUS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=SERVICE_STATUS_COLUMNS)
+        writer.writeheader()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for sname, info in status_map.items():
+            writer.writerow({
+                "service_name": sname,
+                "last_status": info.get("last_status", ""),
+                "last_check_time": now_str
+            })
+
+
 def generate_alert_id():
     return f"ALT{datetime.now().strftime('%Y%m%d%H%M%S')}{np.random.randint(1000, 9999)}"
 
@@ -196,20 +237,16 @@ def generate_mock_data():
         {"service_name": "CDN 加速", "service_type": "网络服务", "avg_response_time": 25, "request_count": 35000},
         {"service_name": "负载均衡器", "service_type": "网络服务", "avg_response_time": 15, "request_count": 45000},
         {"service_name": "日志收集服务", "service_type": "监控服务", "avg_response_time": 95, "request_count": 22000},
-        {"service_name": "图像识别服务", "service_type": "AI 服务", "avg_response_time": 850, "request_count": 1200},
+        {"service_name": "图像识别服务", "service_type": "AI 服务", "avg_response_time": 1200, "request_count": 1200},
     ]
     return pd.DataFrame(services)
 
 
 def detect_and_record_alerts(services_df, thresholds):
-    alerts_df = load_alerts()
-    active_alerts = set()
-    if not alerts_df.empty:
-        active = alerts_df[alerts_df["status"] == "未处理"]
-        for _, row in active.iterrows():
-            active_alerts.add(f"{row['service_name']}_{row['alert_level']}")
-
+    last_status_map = load_service_status()
+    current_status_map = {}
     new_alerts = []
+
     for _, service in services_df.iterrows():
         stype = service["service_type"]
         sname = service["service_name"]
@@ -218,27 +255,34 @@ def detect_and_record_alerts(services_df, thresholds):
         th = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
         warning_th = th["warning_threshold"]
         critical_th = th["critical_threshold"]
-        status = get_service_status(rt, warning_th, critical_th)
+        current_status = get_service_status(rt, warning_th, critical_th)
 
-        if status in ["警告", "异常"]:
-            alert_level = "警告" if status == "警告" else "异常"
-            alert_key = f"{sname}_{alert_level}"
+        last_info = last_status_map.get(sname, {})
+        last_status = last_info.get("last_status", "")
 
-            if alert_key not in active_alerts:
-                alert_data = {
-                    "alert_id": generate_alert_id(),
-                    "service_name": sname,
-                    "service_type": stype,
-                    "alert_level": alert_level,
-                    "alert_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "response_time": rt,
-                    "warning_threshold": warning_th,
-                    "critical_threshold": critical_th,
-                    "status": "未处理",
-                    "resolved_time": ""
-                }
-                new_alerts.append(alert_data)
-                save_alert(alert_data)
+        current_status_map[sname] = {
+            "last_status": current_status,
+            "last_check_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        if last_status == "正常" and current_status in ["警告", "异常"]:
+            alert_level = "警告" if current_status == "警告" else "异常"
+            alert_data = {
+                "alert_id": generate_alert_id(),
+                "service_name": sname,
+                "service_type": stype,
+                "alert_level": alert_level,
+                "alert_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "response_time": rt,
+                "warning_threshold": warning_th,
+                "critical_threshold": critical_th,
+                "status": "未处理",
+                "resolved_time": ""
+            }
+            new_alerts.append(alert_data)
+            save_alert(alert_data)
+
+    save_service_status(current_status_map)
 
     return new_alerts
 
@@ -264,6 +308,12 @@ def get_unresolved_alert_count():
     return len(alerts_df[alerts_df["status"] == "未处理"])
 
 
+def get_status_for_row(row, thresholds):
+    stype = row["service_type"]
+    th = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+    return get_service_status(row["avg_response_time"], th["warning_threshold"], th["critical_threshold"])
+
+
 def render_dashboard_page():
     df = generate_mock_data()
     thresholds = load_thresholds()
@@ -271,12 +321,9 @@ def render_dashboard_page():
     detect_and_record_alerts(df, thresholds)
 
     df_with_status = df.copy()
-    for idx, row in df_with_status.iterrows():
-        stype = row["service_type"]
-        th = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
-        df_with_status.at[idx, "status"] = get_service_status(
-            row["avg_response_time"], th["warning_threshold"], th["critical_threshold"]
-        )
+    df_with_status["status"] = df_with_status.apply(
+        lambda row: get_status_for_row(row, thresholds), axis=1
+    )
 
     with st.sidebar:
         st.header("🔧 过滤器")
@@ -303,11 +350,41 @@ def render_dashboard_page():
 
         st.divider()
 
-        st.subheader("🔔 告警阈值设置")
+        st.header("🔔 告警管理")
+        unresolved_count = get_unresolved_alert_count()
+
+        card_class = "clickable-card-normal"
+        if unresolved_count > 0:
+            alerts_df = load_alerts()
+            if not alerts_df.empty:
+                unresolved_critical = len(alerts_df[(alerts_df["status"] == "未处理") & (alerts_df["alert_level"] == "异常")])
+                card_class = "clickable-card-critical" if unresolved_critical > 0 else "clickable-card-warning"
+
+        st.markdown(f"""
+        <div class="clickable-card {card_class}">
+            <div style="font-size: 14px; color: #6B7280; margin-bottom: 4px;">
+                🔔 未处理告警
+            </div>
+            <div style="font-size: 28px; font-weight: 700; color: #111827;">
+                {unresolved_count} 条
+            </div>
+            <div style="font-size: 12px; color: #6B7280; margin-top: 4px;">
+                点击下方按钮查看详情
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("📋 查看告警历史", use_container_width=True, type="primary" if unresolved_count > 0 else "secondary", key="sidebar_alert_btn"):
+            st.session_state["page"] = "alerts"
+            st.rerun()
+
+        st.divider()
+
+        st.subheader("⚙️ 告警阈值设置")
         all_service_types = sorted(df_with_status["service_type"].unique().tolist())
         for stype in all_service_types:
             current = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
-            with st.expander(f"⚙️ {stype}", expanded=False):
+            with st.expander(f"{stype}", expanded=False):
                 col_w, col_c = st.columns(2)
                 with col_w:
                     new_warning = st.number_input(
@@ -332,7 +409,7 @@ def render_dashboard_page():
                     "critical_threshold": new_critical
                 }
 
-        if st.button("💾 保存阈值设置", use_container_width=True, type="primary"):
+        if st.button("💾 保存阈值设置", use_container_width=True, type="primary", key="save_th_dash"):
             save_thresholds(thresholds)
             st.success("✅ 阈值设置已保存！")
             st.cache_data.clear()
@@ -360,8 +437,6 @@ def render_dashboard_page():
         filtered_df = filtered_df.sort_values("avg_response_time", ascending=False)
     elif sort_option == "请求量降序":
         filtered_df = filtered_df.sort_values("request_count", ascending=False)
-
-    unresolved_count = get_unresolved_alert_count()
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -406,13 +481,13 @@ def render_dashboard_page():
     with col5:
         alert_label = "🔔 未处理告警"
         if unresolved_count > 0:
-            alert_label = f"🚨 未处理告警"
-        alert_metric = st.metric(
+            alert_label = "🚨 未处理告警"
+        st.metric(
             label=alert_label,
             value=f"{unresolved_count} 条",
-            help="点击下方按钮查看告警详情"
+            help="点击下方按钮跳转到告警历史页"
         )
-        if st.button("📋 查看告警历史", use_container_width=True, type="secondary" if unresolved_count == 0 else "primary"):
+        if st.button("📋 查看告警历史", use_container_width=True, type="primary" if unresolved_count > 0 else "secondary", key="metric_alert_btn"):
             st.session_state["page"] = "alerts"
             st.rerun()
 
@@ -423,23 +498,28 @@ def render_dashboard_page():
     with col_chart1:
         st.subheader("📊 服务响应时间条形图")
 
-        filtered_df["color"] = filtered_df["avg_response_time"].apply(
-            lambda x: "正常" if x < 100 else ("警告" if x < 500 else "异常")
+        chart_df = filtered_df.copy()
+        chart_df["status_color"] = chart_df.apply(
+            lambda row: get_status_for_row(row, thresholds), axis=1
         )
 
         fig = px.bar(
-            filtered_df,
+            chart_df,
             x="avg_response_time",
             y="service_name",
             orientation="h",
-            color="avg_response_time",
-            color_continuous_scale=["#10B981", "#F59E0B", "#EF4444"],
+            color="status_color",
+            color_discrete_map={
+                "正常": "#10B981",
+                "警告": "#F59E0B",
+                "异常": "#EF4444"
+            },
             text="avg_response_time",
             title="各服务平均响应时间对比 (单位：ms)",
             hover_data={
                 "service_type": True,
                 "request_count": True,
-                "status": True,
+                "status_color": True,
                 "avg_response_time": ":.1f"
             }
         )
@@ -447,18 +527,22 @@ def render_dashboard_page():
         fig.update_layout(
             xaxis_title="响应时间 (ms)",
             yaxis_title="服务名称",
-            showlegend=False,
+            showlegend=True,
+            legend_title="服务状态",
             height=500,
             xaxis=dict(
                 showgrid=True,
-                gridstyle="dash",
                 gridcolor="rgba(0,0,0,0.1)"
             ),
             yaxis=dict(
-                showgrid=False,
-                categoryorder="total ascending" if sort_option == "响应时间升序" else "total descending"
+                showgrid=False
             )
         )
+
+        if sort_option == "响应时间升序":
+            fig.update_yaxes(categoryorder="total ascending")
+        elif sort_option == "响应时间降序":
+            fig.update_yaxes(categoryorder="total descending")
 
         fig.update_traces(
             texttemplate="%{text:.0f} ms",
@@ -584,13 +668,13 @@ def render_alerts_page():
             )
 
         st.divider()
-        st.subheader("🔔 告警阈值设置")
+        st.subheader("⚙️ 告警阈值设置")
         thresholds = load_thresholds()
         df = generate_mock_data()
         all_service_types = sorted(df["service_type"].unique().tolist())
         for stype in all_service_types:
             current = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
-            with st.expander(f"⚙️ {stype}", expanded=False):
+            with st.expander(f"{stype}", expanded=False):
                 col_w, col_c = st.columns(2)
                 with col_w:
                     new_warning = st.number_input(
@@ -730,7 +814,7 @@ def render_alerts_page():
                             <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px;">
                                 <span style="margin-right: 16px;">🏷️ {row['service_type']}</span>
                                 <span style="margin-right: 16px;">⏰ {row['alert_time']}</span>
-                                {'<span>✅ 处理时间：' + str(row['resolved_time']) + '</span>' if pd.notna(row['resolved_time']) and str(row['resolved_time']) != '' else ''}
+                                {'<span>✅ 处理时间：' + str(row['resolved_time']) + '</span>' if str(row['resolved_time']) != '' else ''}
                             </div>
                             <div style="font-size: 14px;">
                                 <span style="margin-right: 20px;">
