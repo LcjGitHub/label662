@@ -1,0 +1,285 @@
+{
+  "nodes": [
+    {
+      "id": "api_gateway",
+      "name": "API 网关",
+      "type": "网关服务",
+      "description": "系统入口，负责请求路由、负载均衡和限流",
+      "owner": "基础架构组"
+    },
+    {
+      "id": "auth_service",
+      "name": "用户认证服务",
+      "type": "认证服务",
+      "description": "负责用户登录、鉴权、Token 管理",
+      "owner": "用户中心组"
+    },
+    {
+      "id": "mysql_primary",
+      "name": "MySQL 主库",
+      "type": "数据库",
+      "description": "核心业务数据主库，承担读写操作",
+      "owner": "DBA 组"
+    },
+    {
+      "id": "redis_cache",
+      "name": "Redis 缓存",
+      "type": "缓存服务",
+      "description": "分布式缓存，用于热点数据和会话存储",
+      "owner": "基础架构组"
+    },
+    {
+      "id": "mongodb",
+      "name": "MongoDB",
+      "type": "数据库",
+      "description": "文档型数据库，存储日志和非结构化数据",
+      "owner": "DBA 组"
+    },
+    {
+      "id": "file_storage",
+      "name": "文件存储服务",
+      "type": "存储服务",
+      "description": "对象存储服务，管理用户上传的文件",
+      "owner": "基础架构组"
+    },
+    {
+      "id": "kafka_mq",
+      "name": "消息队列 Kafka",
+      "type": "消息服务",
+      "description": "异步消息队列，服务间解耦和事件驱动",
+      "owner": "中间件组"
+    },
+    {
+      "id": "elasticsearch",
+      "name": "搜索引擎 Elasticsearch",
+      "type": "搜索服务",
+      "description": "全文搜索引擎，提供快速检索能力",
+      "owner": "搜索组"
+    },
+    {
+      "id": "payment_gateway",
+      "name": "支付网关",
+      "type": "支付服务",
+      "description": "对接第三方支付渠道，处理支付请求",
+      "owner": "支付组"
+    },
+    {
+      "id": "email_service",
+      "name": "邮件服务",
+      "type": "通知服务",
+      "description": "邮件通知服务，发送验证码和系统通知",
+      "owner": "用户中心组"
+    },
+    {
+      "id": "sms_service",
+      "name": "短信服务",
+      "type": "通知服务",
+      "description": "短信通知服务，发送验证码和告警信息",
+      "owner": "用户中心组"
+    },
+    {
+      "id": "cdn_service",
+      "name": "CDN 加速",
+      "type": "网络服务",
+      "description": "内容分发网络，加速静态资源访问",
+      "owner": "基础架构组"
+    },
+    {
+      "id": "load_balancer",
+      "name": "负载均衡器",
+      "type": "网络服务",
+      "description": "流量分发，将请求均衡分发到后端服务",
+      "owner": "基础架构组"
+    },
+    {
+      "id": "log_collector",
+      "name": "日志收集服务",
+      "type": "监控服务",
+      "description": "集中收集、处理和存储各服务日志",
+      "owner": "运维组"
+    },
+    {
+      "id": "image_recognition",
+      "name": "图像识别服务",
+      "type": "AI 服务",
+      "description": "AI 图像识别，提供图片分类、OCR 等能力",
+      "owner": "AI 组"
+    }
+  ],
+  "edges": [
+    {
+      "source": "load_balancer",
+      "target": "api_gateway",
+      "call_frequency": 45000,
+      "description": "流量转发"
+    },
+    {
+      "source": "api_gateway",
+      "target": "auth_service",
+      "call_frequency": 8500,
+      "description": "身份鉴权"
+    },
+    {
+      "source": "api_gateway",
+      "target": "mysql_primary",
+      "call_frequency": 25000,
+      "description": "元数据查询"
+    },
+    {
+      "source": "api_gateway",
+      "target": "redis_cache",
+      "call_frequency": 15000,
+      "description": "缓存读取"
+    },
+    {
+      "source": "api_gateway",
+      "target": "log_collector",
+      "call_frequency": 22000,
+      "description": "访问日志上报"
+    },
+    {
+      "source": "auth_service",
+      "target": "redis_cache",
+      "call_frequency": 50000,
+      "description": "Session/Token 缓存"
+    },
+    {
+      "source": "auth_service",
+      "target": "mysql_primary",
+      "call_frequency": 8000,
+      "description": "用户数据查询"
+    },
+    {
+      "source": "auth_service",
+      "target": "sms_service",
+      "call_frequency": 3600,
+      "description": "验证码短信发送"
+    },
+    {
+      "source": "auth_service",
+      "target": "email_service",
+      "call_frequency": 4800,
+      "description": "验证码邮件发送"
+    },
+    {
+      "source": "auth_service",
+      "target": "kafka_mq",
+      "call_frequency": 6000,
+      "description": "登录事件发布"
+    },
+    {
+      "source": "payment_gateway",
+      "target": "mysql_primary",
+      "call_frequency": 2100,
+      "description": "支付订单持久化"
+    },
+    {
+      "source": "payment_gateway",
+      "target": "redis_cache",
+      "call_frequency": 3500,
+      "description": "支付状态缓存"
+    },
+    {
+      "source": "payment_gateway",
+      "target": "kafka_mq",
+      "call_frequency": 2000,
+      "description": "支付成功事件"
+    },
+    {
+      "source": "payment_gateway",
+      "target": "log_collector",
+      "call_frequency": 2100,
+      "description": "交易日志上报"
+    },
+    {
+      "source": "elasticsearch",
+      "target": "mongodb",
+      "call_frequency": 6500,
+      "description": "数据同步"
+    },
+    {
+      "source": "elasticsearch",
+      "target": "log_collector",
+      "call_frequency": 5000,
+      "description": "搜索日志上报"
+    },
+    {
+      "source": "file_storage",
+      "target": "mongodb",
+      "call_frequency": 3200,
+      "description": "文件元数据存储"
+    },
+    {
+      "source": "file_storage",
+      "target": "cdn_service",
+      "call_frequency": 35000,
+      "description": "静态资源分发"
+    },
+    {
+      "source": "file_storage",
+      "target": "log_collector",
+      "call_frequency": 3200,
+      "description": "操作日志上报"
+    },
+    {
+      "source": "image_recognition",
+      "target": "file_storage",
+      "call_frequency": 1200,
+      "description": "图片文件读取"
+    },
+    {
+      "source": "image_recognition",
+      "target": "mongodb",
+      "call_frequency": 1100,
+      "description": "识别结果存储"
+    },
+    {
+      "source": "image_recognition",
+      "target": "log_collector",
+      "call_frequency": 1200,
+      "description": "识别日志上报"
+    },
+    {
+      "source": "kafka_mq",
+      "target": "log_collector",
+      "call_frequency": 18000,
+      "description": "消息处理日志"
+    },
+    {
+      "source": "email_service",
+      "target": "kafka_mq",
+      "call_frequency": 4800,
+      "description": "消费通知消息"
+    },
+    {
+      "source": "sms_service",
+      "target": "kafka_mq",
+      "call_frequency": 3600,
+      "description": "消费短信消息"
+    },
+    {
+      "source": "log_collector",
+      "target": "elasticsearch",
+      "call_frequency": 22000,
+      "description": "日志写入 ES"
+    },
+    {
+      "source": "mongodb",
+      "target": "log_collector",
+      "call_frequency": 12000,
+      "description": "数据库慢查询日志"
+    },
+    {
+      "source": "mysql_primary",
+      "target": "log_collector",
+      "call_frequency": 25000,
+      "description": "数据库审计日志"
+    },
+    {
+      "source": "redis_cache",
+      "target": "log_collector",
+      "call_frequency": 50000,
+      "description": "缓存监控日志"
+    }
+  ]
+}

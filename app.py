@@ -1,10 +1,13 @@
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
 import csv
+import json
+import math
 
 st.set_page_config(
     page_title="服务响应时效监控",
@@ -55,6 +58,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 ALERTS_CSV = os.path.join(DATA_DIR, "alerts.csv")
 THRESHOLDS_CSV = os.path.join(DATA_DIR, "thresholds.csv")
 SERVICE_STATUS_CSV = os.path.join(DATA_DIR, "service_status.csv")
+DEPENDENCIES_JSON = os.path.join(DATA_DIR, "service_dependencies.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -314,6 +318,99 @@ def get_status_for_row(row, thresholds):
     return get_service_status(row["avg_response_time"], th["warning_threshold"], th["critical_threshold"])
 
 
+def load_dependencies():
+    if os.path.exists(DEPENDENCIES_JSON):
+        with open(DEPENDENCIES_JSON, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"nodes": [], "edges": []}
+
+
+def get_node_by_id(dep_data, node_id):
+    for node in dep_data["nodes"]:
+        if node["id"] == node_id:
+            return node
+    return None
+
+
+def get_upstream_services(dep_data, node_id):
+    upstream = []
+    for edge in dep_data["edges"]:
+        if edge["target"] == node_id:
+            src = get_node_by_id(dep_data, edge["source"])
+            if src:
+                upstream.append({**src, "call_frequency": edge["call_frequency"], "description": edge.get("description", "")})
+    return upstream
+
+
+def get_downstream_services(dep_data, node_id):
+    downstream = []
+    for edge in dep_data["edges"]:
+        if edge["source"] == node_id:
+            tgt = get_node_by_id(dep_data, edge["target"])
+            if tgt:
+                downstream.append({**tgt, "call_frequency": edge["call_frequency"], "description": edge.get("description", "")})
+    return downstream
+
+
+def find_all_affected_downstream(dep_data, node_id):
+    affected = set()
+    queue = [node_id]
+    while queue:
+        current = queue.pop(0)
+        for edge in dep_data["edges"]:
+            if edge["source"] == current and edge["target"] not in affected:
+                affected.add(edge["target"])
+                queue.append(edge["target"])
+    return affected
+
+
+def compute_circular_layout(dep_data):
+    nodes = dep_data["nodes"]
+    n = len(nodes)
+    positions = {}
+    radius = 1.0
+    for i, node in enumerate(nodes):
+        angle = 2 * math.pi * i / n - math.pi / 2
+        positions[node["id"]] = {
+            "x": radius * math.cos(angle),
+            "y": radius * math.sin(angle)
+        }
+    return positions
+
+
+def get_status_color(status):
+    if status == "正常":
+        return "#10B981"
+    elif status == "警告":
+        return "#F59E0B"
+    elif status == "异常":
+        return "#EF4444"
+    return "#6B7280"
+
+
+def get_service_info_map(dep_data, services_df, thresholds):
+    info_map = {}
+    for _, row in services_df.iterrows():
+        sname = row["service_name"]
+        stype = row["service_type"]
+        status = get_status_for_row(row, thresholds)
+        info_map[sname] = {
+            "service_type": stype,
+            "avg_response_time": row["avg_response_time"],
+            "request_count": row["request_count"],
+            "status": status
+        }
+    for node in dep_data["nodes"]:
+        if node["name"] not in info_map:
+            info_map[node["name"]] = {
+                "service_type": node["type"],
+                "avg_response_time": np.random.randint(30, 200),
+                "request_count": np.random.randint(1000, 10000),
+                "status": "正常"
+            }
+    return info_map
+
+
 def generate_trend_data(service_name, service_type, base_rt, time_range="24h", granularity="hour"):
     np.random.seed(hash(service_name) % 2**32)
 
@@ -492,6 +589,10 @@ def render_dashboard_page():
 
         if st.button("📈 性能趋势分析", use_container_width=True, type="secondary", key="sidebar_trend_btn"):
             st.session_state["page"] = "trend"
+            st.rerun()
+
+        if st.button("🔗 服务依赖关系", use_container_width=True, type="secondary", key="sidebar_dep_btn"):
+            st.session_state["page"] = "dependency"
             st.rerun()
 
         st.divider()
@@ -783,6 +884,10 @@ def render_alerts_page():
             st.session_state["page"] = "trend"
             st.rerun()
 
+        if st.button("🔗 服务依赖关系", use_container_width=True, type="secondary", key="alt_sidebar_dep_btn"):
+            st.session_state["page"] = "dependency"
+            st.rerun()
+
         st.divider()
 
         st.subheader("🔍 告警筛选")
@@ -1050,6 +1155,10 @@ def render_trend_page():
 
         if st.button("🔔 查看告警历史", use_container_width=True, type="secondary", key="trend_alert_btn"):
             st.session_state["page"] = "alerts"
+            st.rerun()
+
+        if st.button("🔗 服务依赖关系", use_container_width=True, type="secondary", key="trend_sidebar_dep_btn"):
+            st.session_state["page"] = "dependency"
             st.rerun()
 
         st.divider()
@@ -1409,6 +1518,397 @@ def render_trend_page():
         st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
+def render_dependency_page():
+    dep_data = load_dependencies()
+    services_df = generate_mock_data()
+    thresholds = load_thresholds()
+    service_info = get_service_info_map(dep_data, services_df, thresholds)
+
+    if "dep_selected_node" not in st.session_state:
+        st.session_state["dep_selected_node"] = None
+    if "dep_impact_analysis" not in st.session_state:
+        st.session_state["dep_impact_analysis"] = None
+
+    all_node_types = sorted(list(set([n["type"] for n in dep_data["nodes"]])))
+    all_statuses = ["正常", "警告", "异常"]
+
+    with st.sidebar:
+        st.header("🔗 依赖关系")
+
+        if st.button("← 返回监控首页", use_container_width=True, key="dep_back_btn"):
+            st.session_state["page"] = "dashboard"
+            st.session_state["dep_selected_node"] = None
+            st.session_state["dep_impact_analysis"] = None
+            st.rerun()
+
+        if st.button("📈 性能趋势分析", use_container_width=True, type="secondary", key="dep_trend_btn"):
+            st.session_state["page"] = "trend"
+            st.rerun()
+
+        if st.button("🔔 查看告警历史", use_container_width=True, type="secondary", key="dep_alert_btn"):
+            st.session_state["page"] = "alerts"
+            st.rerun()
+
+        st.divider()
+        st.subheader("🔍 筛选选项")
+
+        selected_types = st.multiselect(
+            "按服务类型过滤",
+            options=all_node_types,
+            default=all_node_types,
+            help="只显示选定类型的服务节点"
+        )
+
+        selected_statuses = st.multiselect(
+            "按状态过滤显示",
+            options=all_statuses,
+            default=all_statuses,
+            help="只显示选定状态的服务节点"
+        )
+
+        st.divider()
+        st.subheader("⚠️ 影响分析")
+
+        all_node_names = [""] + [n["name"] for n in dep_data["nodes"]]
+        impact_service = st.selectbox(
+            "选择异常服务",
+            options=all_node_names,
+            help="选择一个服务，高亮显示所有受其影响的下游服务",
+            index=0
+        )
+
+        col_impact1, col_impact2 = st.columns(2)
+        with col_impact1:
+            if st.button("🔍 分析影响", use_container_width=True, key="run_impact", type="primary"):
+                if impact_service:
+                    node = next((n for n in dep_data["nodes"] if n["name"] == impact_service), None)
+                    if node:
+                        st.session_state["dep_impact_analysis"] = node["id"]
+                        st.session_state["dep_selected_node"] = node["id"]
+                else:
+                    st.warning("请先选择一个服务")
+        with col_impact2:
+            if st.button("❌ 清除", use_container_width=True, key="clear_impact"):
+                st.session_state["dep_impact_analysis"] = None
+                st.session_state["dep_selected_node"] = None
+
+        if st.session_state["dep_impact_analysis"]:
+            impact_node = get_node_by_id(dep_data, st.session_state["dep_impact_analysis"])
+            affected = find_all_affected_downstream(dep_data, st.session_state["dep_impact_analysis"])
+            affected_names = [get_node_by_id(dep_data, aid)["name"] for aid in affected if get_node_by_id(dep_data, aid)]
+            st.info(f"⚠️ 服务「{impact_node['name']}」异常将影响下游 **{len(affected_names)}** 个服务")
+
+        st.divider()
+        st.subheader("📋 图例说明")
+        legend_html = """
+        <div style="font-size: 12px; line-height: 1.8;">
+            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#10B981;margin-right:6px;"></span>正常</div>
+            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#F59E0B;margin-right:6px;"></span>警告</div>
+            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#EF4444;margin-right:6px;"></span>异常</div>
+            <div style="margin-top: 8px;"><strong>节点大小</strong>：请求量越大，节点越大</div>
+            <div><strong>连线粗细</strong>：调用频率越高，连线越粗</div>
+        </div>
+        """
+        st.markdown(legend_html, unsafe_allow_html=True)
+
+        st.divider()
+        st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    st.title("🔗 服务依赖关系可视化")
+    st.markdown("展示各服务之间的依赖关系和调用链路，支持节点详情查看、状态筛选和异常影响分析")
+    st.divider()
+
+    filtered_node_ids = set()
+    for node in dep_data["nodes"]:
+        info = service_info.get(node["name"], {"service_type": node["type"], "status": "正常"})
+        if node["type"] in selected_types and info.get("status", "正常") in selected_statuses:
+            filtered_node_ids.add(node["id"])
+
+    positions = compute_circular_layout(dep_data)
+
+    all_request_counts = [service_info.get(n["name"], {"request_count": 1000})["request_count"] for n in dep_data["nodes"]]
+    min_req, max_req = min(all_request_counts), max(all_request_counts)
+    all_freqs = [e["call_frequency"] for e in dep_data["edges"]]
+    min_freq, max_freq = min(all_freqs), max(all_freqs)
+
+    def scale_node_size(req):
+        if max_req == min_req:
+            return 30
+        norm = (req - min_req) / (max_req - min_req) if max_req > min_req else 0.5
+        return 20 + norm * 35
+
+    def scale_edge_width(freq):
+        if max_freq == min_freq:
+            return 2
+        norm = (freq - min_freq) / (max_freq - min_freq) if max_freq > min_freq else 0.5
+        return 1 + norm * 6
+
+    impact_affected_ids = set()
+    if st.session_state["dep_impact_analysis"]:
+        impact_affected_ids = find_all_affected_downstream(dep_data, st.session_state["dep_impact_analysis"])
+
+    edge_traces = []
+    for edge in dep_data["edges"]:
+        if edge["source"] not in filtered_node_ids or edge["target"] not in filtered_node_ids:
+            continue
+        src_pos = positions.get(edge["source"])
+        tgt_pos = positions.get(edge["target"])
+        if not src_pos or not tgt_pos:
+            continue
+        src_node = get_node_by_id(dep_data, edge["source"])
+        tgt_node = get_node_by_id(dep_data, edge["target"])
+        src_name = src_node["name"] if src_node else edge["source"]
+        tgt_name = tgt_node["name"] if tgt_node else edge["target"]
+
+        is_highlighted = False
+        line_color = "rgba(156, 163, 175, 0.5)"
+        if st.session_state["dep_impact_analysis"]:
+            if edge["source"] == st.session_state["dep_impact_analysis"] or edge["source"] in impact_affected_ids:
+                is_highlighted = True
+                line_color = "rgba(239, 68, 68, 0.85)"
+        if st.session_state["dep_selected_node"]:
+            sel_id = st.session_state["dep_selected_node"]
+            if edge["source"] == sel_id or edge["target"] == sel_id:
+                is_highlighted = True
+                line_color = "rgba(59, 130, 246, 0.9)"
+
+        width = scale_edge_width(edge["call_frequency"]) if is_highlighted else scale_edge_width(edge["call_frequency"]) * 0.6
+        if not is_highlighted and st.session_state["dep_impact_analysis"]:
+            line_color = "rgba(209, 213, 219, 0.25)"
+            width *= 0.4
+
+        arrow_x = tgt_pos["x"]
+        arrow_y = tgt_pos["y"]
+        dx = tgt_pos["x"] - src_pos["x"]
+        dy = tgt_pos["y"] - src_pos["y"]
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist > 0:
+            tgt_size = scale_node_size(service_info.get(tgt_name, {"request_count": 1000})["request_count"])
+            offset = tgt_size * 0.008
+            arrow_x = tgt_pos["x"] - (dx / dist) * offset
+            arrow_y = tgt_pos["y"] - (dy / dist) * offset
+
+        edge_trace = go.Scatter(
+            x=[src_pos["x"], arrow_x, None],
+            y=[src_pos["y"], arrow_y, None],
+            mode="lines",
+            line=dict(width=width, color=line_color),
+            hoverinfo="text",
+            text=f"{src_name} → {tgt_name}<br>调用频率: {edge['call_frequency']:,} 次/日<br>{edge.get('description', '')}",
+            showlegend=False
+        )
+        edge_traces.append(edge_trace)
+
+    node_x = []
+    node_y = []
+    node_sizes = []
+    node_colors = []
+    node_texts = []
+    node_hover_texts = []
+    node_ids = []
+
+    for node in dep_data["nodes"]:
+        if node["id"] not in filtered_node_ids:
+            continue
+        pos = positions.get(node["id"])
+        if not pos:
+            continue
+        info = service_info.get(node["name"], {"status": "正常", "request_count": 1000, "avg_response_time": 50})
+        status = info.get("status", "正常")
+        req_count = info.get("request_count", 1000)
+        color = get_status_color(status)
+
+        is_selected = st.session_state["dep_selected_node"] == node["id"]
+        is_impact_source = st.session_state["dep_impact_analysis"] == node["id"]
+        is_impact_affected = node["id"] in impact_affected_ids
+
+        if is_selected:
+            color = "#3B82F6"
+        elif is_impact_source:
+            color = "#EF4444"
+        elif is_impact_affected:
+            color = "#F97316"
+        elif st.session_state["dep_impact_analysis"]:
+            r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+            color = f"rgba({r}, {g}, {b}, 0.25)"
+
+        node_x.append(pos["x"])
+        node_y.append(pos["y"])
+        size = scale_node_size(req_count)
+        node_sizes.append(size * 1.3 if is_selected or is_impact_source else size)
+        node_colors.append(color)
+        node_ids.append(node["id"])
+
+        display_name = node["name"]
+        if len(display_name) > 8:
+            display_name = display_name[:4] + "<br>" + display_name[4:]
+        node_texts.append(display_name)
+
+        node_hover_texts.append(
+            f"<b>{node['name']}</b><br>"
+            f"类型: {node['type']}<br>"
+            f"状态: {status}<br>"
+            f"响应时间: {info.get('avg_response_time', 0):.0f} ms<br>"
+            f"请求量: {req_count:,} 次/日<br>"
+            f"负责人: {node.get('owner', 'N/A')}<br>"
+            f"<i>点击查看详情</i>"
+        )
+
+    node_trace = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode="markers+text",
+        text=node_texts,
+        textposition="top center",
+        textfont=dict(size=10, color="#111827"),
+        marker=dict(
+            size=node_sizes,
+            color=node_colors,
+            line=dict(width=2, color="white"),
+            opacity=1.0
+        ),
+        hoverinfo="text",
+        hovertext=node_hover_texts,
+        customdata=node_ids,
+        showlegend=False
+    )
+
+    fig = go.Figure(data=edge_traces + [node_trace])
+    fig.update_layout(
+        height=650,
+        margin=dict(l=10, r=10, t=20, b=20),
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            range=[-1.35, 1.35]
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            range=[-1.35, 1.35],
+            scaleanchor="x",
+            scaleratio=1
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(249, 250, 251, 1)",
+        clickmode="event+select",
+        dragmode="pan"
+    )
+
+    col_net, col_detail = st.columns([2, 1])
+    with col_net:
+        st.subheader("🕸️ 服务依赖网络图")
+        st.caption("💡 点击节点查看服务详情；在侧边栏选择服务进行影响分析")
+        event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="dep_chart")
+
+        if event and event.selection and len(event.selection.points) > 0:
+            selected_idx = event.selection.points[0].point_index
+            if selected_idx is not None and selected_idx < len(node_ids):
+                st.session_state["dep_selected_node"] = node_ids[selected_idx]
+
+    with col_detail:
+        st.subheader("📋 服务详情")
+        selected_node_id = st.session_state.get("dep_selected_node")
+        if selected_node_id:
+            node = get_node_by_id(dep_data, selected_node_id)
+            if node:
+                info = service_info.get(node["name"], {})
+                status = info.get("status", "正常")
+                status_color = get_status_color(status)
+
+                status_badge = f"<span style='padding:2px 10px;border-radius:12px;background-color:{status_color};color:white;font-size:13px;font-weight:600;'>{status}</span>"
+
+                st.markdown(f"""
+                <div style="padding: 16px; background-color: white; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 16px;">
+                    <h3 style="margin: 0 0 8px 0; font-size: 18px;">{node['name']}</h3>
+                    <div style="margin-bottom: 12px;">{status_badge}</div>
+                    <div style="font-size: 13px; color: #6B7280; line-height: 1.6;">
+                        {node.get('description', '')}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.metric(
+                        label="⏱️ 响应时间",
+                        value=f"{info.get('avg_response_time', 0):.0f} ms",
+                        help="服务平均响应时间"
+                    )
+                with col_d2:
+                    st.metric(
+                        label="📦 请求量",
+                        value=f"{info.get('request_count', 0):,}",
+                        help="日均请求次数"
+                    )
+
+                st.markdown("**🏷️ 服务类型**: " + node["type"])
+                st.markdown("**👥 负责团队**: " + node.get("owner", "N/A"))
+
+                upstream = get_upstream_services(dep_data, selected_node_id)
+                downstream = get_downstream_services(dep_data, selected_node_id)
+
+                with st.expander(f"🔻 上游依赖服务（{len(upstream)} 个）", expanded=True):
+                    if upstream:
+                        for up in upstream:
+                            up_info = service_info.get(up["name"], {"status": "正常"})
+                            up_color = get_status_color(up_info.get("status", "正常"))
+                            st.markdown(f"""
+                            <div style="padding: 8px 12px; margin-bottom: 6px; border-radius: 6px; background-color: #F9FAFB; border-left: 3px solid {up_color};">
+                                <div style="font-weight: 600; font-size: 13px;">{up['name']}</div>
+                                <div style="font-size: 11px; color: #6B7280;">
+                                    {up.get('description', '')} · 调用频率: {up['call_frequency']:,} 次/日
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.caption("无上游依赖")
+
+                with st.expander(f"🔺 下游被依赖服务（{len(downstream)} 个）", expanded=True):
+                    if downstream:
+                        for down in downstream:
+                            down_info = service_info.get(down["name"], {"status": "正常"})
+                            down_color = get_status_color(down_info.get("status", "正常"))
+                            st.markdown(f"""
+                            <div style="padding: 8px 12px; margin-bottom: 6px; border-radius: 6px; background-color: #F9FAFB; border-left: 3px solid {down_color};">
+                                <div style="font-weight: 600; font-size: 13px;">{down['name']}</div>
+                                <div style="font-size: 11px; color: #6B7280;">
+                                    {down.get('description', '')} · 调用频率: {down['call_frequency']:,} 次/日
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.caption("无下游依赖")
+            else:
+                st.info("👈 请点击网络图中的节点查看详情，或在侧边栏选择服务进行影响分析")
+        else:
+            st.info("👈 请点击网络图中的节点查看详情，或在侧边栏选择服务进行影响分析")
+
+    st.divider()
+
+    st.subheader("📊 依赖关系汇总统计")
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        st.metric(label="🔗 服务节点总数", value=len(dep_data["nodes"]))
+    with col_s2:
+        st.metric(label="➡️ 依赖关系总数", value=len(dep_data["edges"]))
+    with col_s3:
+        normal_count = len([n for n in dep_data["nodes"] if service_info.get(n["name"], {}).get("status") == "正常"])
+        st.metric(label="✅ 正常服务", value=normal_count)
+    with col_s4:
+        abnormal_count = len([n for n in dep_data["nodes"] if service_info.get(n["name"], {}).get("status") in ["警告", "异常"]])
+        st.metric(label="⚠️ 异常服务", value=abnormal_count, delta=abnormal_count, delta_color="inverse")
+
+    st.divider()
+    col_footer1, col_footer2 = st.columns(2)
+    with col_footer1:
+        st.caption(f"💾 依赖关系配置文件：{DEPENDENCIES_JSON}")
+    with col_footer2:
+        st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
 def main():
     if "page" not in st.session_state:
         st.session_state["page"] = "dashboard"
@@ -1419,6 +1919,8 @@ def main():
         render_alerts_page()
     elif st.session_state["page"] == "trend":
         render_trend_page()
+    elif st.session_state["page"] == "dependency":
+        render_dependency_page()
     else:
         render_dashboard_page()
 
