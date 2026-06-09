@@ -9,6 +9,20 @@ import csv
 import json
 import math
 
+from trace_components import (
+    get_trace_status_color,
+    get_error_type_color,
+    compute_trace_summary,
+    build_trace_chain,
+    build_trace_tree,
+    get_trace_tree_flat,
+    render_trace_timeline,
+    render_trace_waterfall,
+    filter_traces_by_service,
+    render_status_distribution,
+    render_error_distribution,
+)
+
 st.set_page_config(
     page_title="服务响应时效监控",
     page_icon="⚡",
@@ -1356,11 +1370,75 @@ def load_dependencies():
 
 
 def generate_trace_id():
-    return f"TRACE{datetime.now().strftime('%Y%m%d%H%M%S')}{np.random.randint(100000, 999999)}"
+    return f"TRACE{datetime.now().strftime('%Y%m%d%H%M%S')}{int(np.random.randint(100000, 999999))}"
 
 
 def generate_span_id():
-    return f"SPAN{datetime.now().strftime('%H%M%S')}{np.random.randint(10000, 99999)}"
+    return f"SPAN{datetime.now().strftime('%H%M%S')}{int(np.random.randint(10000, 99999))}"
+
+
+def to_native_types(obj):
+    try:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            result = {}
+            for k, v in obj.items():
+                try:
+                    safe_k = str(k) if k is not None else ""
+                    safe_v = to_native_types(v)
+                    result[safe_k] = safe_v
+                except Exception:
+                    continue
+            return result
+        elif isinstance(obj, (list, tuple, set)):
+            result = []
+            for item in obj:
+                try:
+                    safe_item = to_native_types(item)
+                    result.append(safe_item)
+                except Exception:
+                    continue
+            return result
+        elif isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            try:
+                val = float(obj)
+                if math.isnan(val) or math.isinf(val):
+                    return 0.0
+                return val
+            except Exception:
+                return 0.0
+        elif isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        elif isinstance(obj, np.ndarray):
+            try:
+                return to_native_types(obj.tolist())
+            except Exception:
+                return []
+        elif isinstance(obj, float):
+            try:
+                if math.isnan(obj) or math.isinf(obj):
+                    return 0.0
+                return obj
+            except Exception:
+                return 0.0
+        elif isinstance(obj, bool):
+            return bool(obj)
+        elif isinstance(obj, int):
+            return int(obj)
+        elif isinstance(obj, str):
+            return str(obj)
+        elif isinstance(obj, (datetime,)):
+            return str(obj)
+        else:
+            try:
+                return str(obj)
+            except Exception:
+                return None
+    except Exception:
+        return None
 
 
 def generate_mock_call_traces(dep_data, count=300, hours_back=24):
@@ -1402,7 +1480,7 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
         src_node = node_map.get(root_edge["source"], {})
         tgt_node = node_map.get(root_edge["target"], {})
 
-        error_idx = np.random.choice(len(ERROR_TYPE_OPTIONS), p=error_type_weights)
+        error_idx = int(np.random.choice(len(ERROR_TYPE_OPTIONS), p=error_type_weights))
         error_type = ERROR_TYPE_OPTIONS[error_idx]
         is_success = error_type == "无"
         is_timeout = error_type == "连接超时"
@@ -1411,39 +1489,39 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
             status = "成功"
             base_rt = float(root_edge.get("call_frequency", 10000))
             base_rt = max(5.0, min(500.0, 100000.0 / base_rt * 50))
-            response_time = round(base_rt * np.random.uniform(0.6, 1.8), 1)
-            http_status = np.random.choice([200, 200, 200, 201, 204])
+            response_time = float(round(base_rt * float(np.random.uniform(0.6, 1.8)), 1))
+            http_status = int(np.random.choice([200, 200, 200, 201, 204]))
         elif is_timeout:
             status = "超时"
-            response_time = round(np.random.uniform(3000, 10000), 1)
+            response_time = float(round(float(np.random.uniform(3000, 10000)), 1))
             http_status = 504
         else:
             status = "失败"
-            response_time = round(np.random.uniform(50, 2000), 1)
-            http_status = np.random.choice([400, 401, 403, 404, 500, 502, 503])
+            response_time = float(round(float(np.random.uniform(50, 2000)), 1))
+            http_status = int(np.random.choice([400, 401, 403, 404, 500, 502, 503]))
 
         tgt_type = tgt_node.get("type", "网关服务")
         endpoints = endpoints_map.get(tgt_type, ["/api/endpoint"])
-        endpoint = endpoints[np.random.randint(0, len(endpoints))]
+        endpoint = endpoints[int(np.random.randint(0, len(endpoints)))]
 
         src_type = src_node.get("type", "网关服务")
         if src_type in ["消息服务"]:
             method = "PUSH"
         else:
-            method = HTTP_METHODS[np.random.choice(len(HTTP_METHODS), p=[0.5, 0.3, 0.1, 0.05, 0.05])]
+            method = HTTP_METHODS[int(np.random.choice(len(HTTP_METHODS), p=[0.5, 0.3, 0.1, 0.05, 0.05]))]
 
         error_message = ""
         if not is_success:
             error_messages = {
-                "连接超时": "Connection timed out after 30000ms",
-                "服务不可用": "Service unavailable - 503 status returned",
-                "权限错误": "Authentication failed - invalid token",
-                "参数错误": "Validation failed - missing required field",
-                "内部错误": "Internal server error - NullPointerException",
-                "数据库错误": "Database connection refused - too many connections",
-                "网络错误": "Network unreachable - DNS resolution failed"
+                "连接超时": "连接超时：等待 30000ms 后目标服务仍未响应",
+                "服务不可用": "服务不可用：目标服务返回 503 状态码，暂时无法处理请求",
+                "权限错误": "权限错误：访问令牌无效或已过期，请重新登录获取授权",
+                "参数错误": "参数校验失败：请求缺少必填字段或字段格式不符合要求",
+                "内部错误": "服务内部错误：处理请求时发生空指针异常 (NullPointerException)",
+                "数据库错误": "数据库错误：连接被拒绝，已达到最大连接数限制",
+                "网络错误": "网络错误：DNS 解析失败或目标网络不可达"
             }
-            error_message = error_messages.get(error_type, "Unknown error occurred")
+            error_message = error_messages.get(error_type, "未知错误：处理请求时发生异常")
 
         root_trace_id = generate_trace_id()
         root_span_id = generate_span_id()
@@ -1451,25 +1529,25 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
         tags = {
             "http.method": method,
             "http.url": endpoint,
-            "http.status_code": str(http_status),
+            "http.status_code": str(int(http_status)),
             "service.caller": src_node.get("name", ""),
             "service.callee": tgt_node.get("name", ""),
-            "db.statement": "" if tgt_type != "数据库" else f"SELECT * FROM table_{np.random.randint(1, 20)} LIMIT 100",
-            "cache.key": "" if tgt_type != "缓存服务" else f"user:session:{np.random.randint(1000, 9999)}",
-            "request.id": f"REQ{np.random.randint(100000, 999999)}",
-            "user.agent": np.random.choice(["Mozilla/5.0", "curl/7.68.0", "PostmanRuntime/7.29.0", "python-requests/2.28.0"]),
-            "client.ip": f"{np.random.randint(10, 255)}.{np.random.randint(0, 255)}.{np.random.randint(0, 255)}.{np.random.randint(1, 255)}"
+            "db.statement": "" if tgt_type != "数据库" else f"SELECT * FROM table_{int(np.random.randint(1, 20))} LIMIT 100",
+            "cache.key": "" if tgt_type != "缓存服务" else f"user:session:{int(np.random.randint(1000, 9999))}",
+            "request.id": f"REQ{int(np.random.randint(100000, 999999))}",
+            "user.agent": str(np.random.choice(["Mozilla/5.0", "curl/7.68.0", "PostmanRuntime/7.29.0", "python-requests/2.28.0"])),
+            "client.ip": f"{int(np.random.randint(10, 255))}.{int(np.random.randint(0, 255))}.{int(np.random.randint(0, 255))}.{int(np.random.randint(1, 255))}"
         }
 
         root_trace = {
             "trace_id": root_trace_id,
             "span_id": root_span_id,
             "parent_span_id": "",
-            "depth": depth,
+            "depth": int(depth),
             "timestamp": chain_start_time.strftime("%Y-%m-%d %H:%M:%S"),
             "timestamp_dt": chain_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
             "start_time_ms": int(chain_start_time.timestamp() * 1000),
-            "duration_ms": response_time,
+            "duration_ms": float(response_time),
             "source_service_id": root_edge["source"],
             "source_service_name": src_node.get("name", root_edge["source"]),
             "source_service_type": src_node.get("type", ""),
@@ -1478,27 +1556,27 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
             "target_service_type": tgt_node.get("type", ""),
             "method": method,
             "endpoint": endpoint,
-            "response_time_ms": response_time,
+            "response_time_ms": float(response_time),
             "status": status,
-            "http_status_code": http_status,
+            "http_status_code": int(http_status),
             "error_type": error_type,
             "error_message": error_message,
             "request_size_bytes": int(np.random.randint(100, 50000)),
             "response_size_bytes": int(np.random.randint(200, 200000)),
-            "call_frequency": root_edge.get("call_frequency", 1000),
+            "call_frequency": int(root_edge.get("call_frequency", 1000)),
             "description": root_edge.get("description", ""),
             "tags": tags
         }
         chain.append(root_trace)
 
         downstream_edges = [e for e in edges if e["source"] == root_edge["target"]]
-        if downstream_edges and depth < max_depth - 1 and np.random.random() < 0.7:
-            num_child_calls = np.random.randint(1, min(3, len(downstream_edges)) + 1)
+        if downstream_edges and depth < max_depth - 1 and float(np.random.random()) < 0.7:
+            num_child_calls = int(np.random.randint(1, min(3, len(downstream_edges)) + 1))
             selected_child_edges = np.random.choice(downstream_edges, size=min(num_child_calls, len(downstream_edges)), replace=False)
 
-            cumulative_offset = 0
+            cumulative_offset = 0.0
             for child_edge in selected_child_edges:
-                child_start_offset = np.random.uniform(1, max(2, response_time * 0.3))
+                child_start_offset = float(np.random.uniform(1, max(2, response_time * 0.3)))
                 cumulative_offset += child_start_offset
                 child_call_time = chain_start_time + timedelta(milliseconds=cumulative_offset)
                 child_traces = build_call_chain(child_edge, child_call_time, depth + 1, max_depth)
@@ -1513,30 +1591,30 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
 
     chain_count = max(20, count // 6)
     for _ in range(chain_count):
-        edge = edges[np.random.randint(0, len(edges))]
+        edge = edges[int(np.random.randint(0, len(edges)))]
         call_time = now - timedelta(
-            hours=np.random.randint(0, hours_back),
-            minutes=np.random.randint(0, 60),
-            seconds=np.random.randint(0, 60),
-            milliseconds=np.random.randint(0, 1000)
+            hours=int(np.random.randint(0, hours_back)),
+            minutes=int(np.random.randint(0, 60)),
+            seconds=int(np.random.randint(0, 60)),
+            milliseconds=int(np.random.randint(0, 1000))
         )
-        chain_traces = build_call_chain(edge, call_time, depth=0, max_depth=np.random.randint(2, 5))
+        chain_traces = build_call_chain(edge, call_time, depth=0, max_depth=int(np.random.randint(2, 5)))
         chain_builder_traces.extend(chain_traces)
 
     remaining = max(0, count - len(chain_builder_traces))
     for i in range(remaining):
-        edge = edges[np.random.randint(0, len(edges))]
+        edge = edges[int(np.random.randint(0, len(edges)))]
         src_node = node_map.get(edge["source"], {})
         tgt_node = node_map.get(edge["target"], {})
 
         call_time = now - timedelta(
-            hours=np.random.randint(0, hours_back),
-            minutes=np.random.randint(0, 60),
-            seconds=np.random.randint(0, 60),
-            milliseconds=np.random.randint(0, 1000)
+            hours=int(np.random.randint(0, hours_back)),
+            minutes=int(np.random.randint(0, 60)),
+            seconds=int(np.random.randint(0, 60)),
+            milliseconds=int(np.random.randint(0, 1000))
         )
 
-        error_idx = np.random.choice(len(ERROR_TYPE_OPTIONS), p=error_type_weights)
+        error_idx = int(np.random.choice(len(ERROR_TYPE_OPTIONS), p=error_type_weights))
         error_type = ERROR_TYPE_OPTIONS[error_idx]
         is_success = error_type == "无"
         is_timeout = error_type == "连接超时"
@@ -1545,51 +1623,51 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
             status = "成功"
             base_rt = float(edge.get("call_frequency", 10000))
             base_rt = max(5.0, min(500.0, 100000.0 / base_rt * 50))
-            response_time = round(base_rt * np.random.uniform(0.6, 1.8), 1)
-            http_status = np.random.choice([200, 200, 200, 201, 204])
+            response_time = float(round(base_rt * float(np.random.uniform(0.6, 1.8)), 1))
+            http_status = int(np.random.choice([200, 200, 200, 201, 204]))
         elif is_timeout:
             status = "超时"
-            response_time = round(np.random.uniform(3000, 10000), 1)
+            response_time = float(round(float(np.random.uniform(3000, 10000)), 1))
             http_status = 504
         else:
             status = "失败"
-            response_time = round(np.random.uniform(50, 2000), 1)
-            http_status = np.random.choice([400, 401, 403, 404, 500, 502, 503])
+            response_time = float(round(float(np.random.uniform(50, 2000)), 1))
+            http_status = int(np.random.choice([400, 401, 403, 404, 500, 502, 503]))
 
         tgt_type = tgt_node.get("type", "网关服务")
         endpoints = endpoints_map.get(tgt_type, ["/api/endpoint"])
-        endpoint = endpoints[np.random.randint(0, len(endpoints))]
+        endpoint = endpoints[int(np.random.randint(0, len(endpoints)))]
 
         src_type = src_node.get("type", "网关服务")
         if src_type in ["消息服务"]:
             method = "PUSH"
         else:
-            method = HTTP_METHODS[np.random.choice(len(HTTP_METHODS), p=[0.5, 0.3, 0.1, 0.05, 0.05])]
+            method = HTTP_METHODS[int(np.random.choice(len(HTTP_METHODS), p=[0.5, 0.3, 0.1, 0.05, 0.05]))]
 
         error_message = ""
         if not is_success:
             error_messages = {
-                "连接超时": "Connection timed out after 30000ms",
-                "服务不可用": "Service unavailable - 503 status returned",
-                "权限错误": "Authentication failed - invalid token",
-                "参数错误": "Validation failed - missing required field",
-                "内部错误": "Internal server error - NullPointerException",
-                "数据库错误": "Database connection refused - too many connections",
-                "网络错误": "Network unreachable - DNS resolution failed"
+                "连接超时": "连接超时：等待 30000ms 后目标服务仍未响应",
+                "服务不可用": "服务不可用：目标服务返回 503 状态码，暂时无法处理请求",
+                "权限错误": "权限错误：访问令牌无效或已过期，请重新登录获取授权",
+                "参数错误": "参数校验失败：请求缺少必填字段或字段格式不符合要求",
+                "内部错误": "服务内部错误：处理请求时发生空指针异常 (NullPointerException)",
+                "数据库错误": "数据库错误：连接被拒绝，已达到最大连接数限制",
+                "网络错误": "网络错误：DNS 解析失败或目标网络不可达"
             }
-            error_message = error_messages.get(error_type, "Unknown error occurred")
+            error_message = error_messages.get(error_type, "未知错误：处理请求时发生异常")
 
         tags = {
             "http.method": method,
             "http.url": endpoint,
-            "http.status_code": str(http_status),
+            "http.status_code": str(int(http_status)),
             "service.caller": src_node.get("name", ""),
             "service.callee": tgt_node.get("name", ""),
-            "db.statement": "" if tgt_type != "数据库" else f"SELECT * FROM table_{np.random.randint(1, 20)} LIMIT 100",
-            "cache.key": "" if tgt_type != "缓存服务" else f"user:session:{np.random.randint(1000, 9999)}",
-            "request.id": f"REQ{np.random.randint(100000, 999999)}",
-            "user.agent": np.random.choice(["Mozilla/5.0", "curl/7.68.0", "PostmanRuntime/7.29.0", "python-requests/2.28.0"]),
-            "client.ip": f"{np.random.randint(10, 255)}.{np.random.randint(0, 255)}.{np.random.randint(0, 255)}.{np.random.randint(1, 255)}"
+            "db.statement": "" if tgt_type != "数据库" else f"SELECT * FROM table_{int(np.random.randint(1, 20))} LIMIT 100",
+            "cache.key": "" if tgt_type != "缓存服务" else f"user:session:{int(np.random.randint(1000, 9999))}",
+            "request.id": f"REQ{int(np.random.randint(100000, 999999))}",
+            "user.agent": str(np.random.choice(["Mozilla/5.0", "curl/7.68.0", "PostmanRuntime/7.29.0", "python-requests/2.28.0"])),
+            "client.ip": f"{int(np.random.randint(10, 255))}.{int(np.random.randint(0, 255))}.{int(np.random.randint(0, 255))}.{int(np.random.randint(1, 255))}"
         }
 
         trace = {
@@ -1600,7 +1678,7 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
             "timestamp": call_time.strftime("%Y-%m-%d %H:%M:%S"),
             "timestamp_dt": call_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
             "start_time_ms": int(call_time.timestamp() * 1000),
-            "duration_ms": response_time,
+            "duration_ms": float(response_time),
             "source_service_id": edge["source"],
             "source_service_name": src_node.get("name", edge["source"]),
             "source_service_type": src_node.get("type", ""),
@@ -1609,14 +1687,14 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
             "target_service_type": tgt_node.get("type", ""),
             "method": method,
             "endpoint": endpoint,
-            "response_time_ms": response_time,
+            "response_time_ms": float(response_time),
             "status": status,
-            "http_status_code": http_status,
+            "http_status_code": int(http_status),
             "error_type": error_type,
             "error_message": error_message,
             "request_size_bytes": int(np.random.randint(100, 50000)),
             "response_size_bytes": int(np.random.randint(200, 200000)),
-            "call_frequency": edge.get("call_frequency", 1000),
+            "call_frequency": int(edge.get("call_frequency", 1000)),
             "description": edge.get("description", ""),
             "tags": tags
         }
@@ -1628,355 +1706,220 @@ def generate_mock_call_traces(dep_data, count=300, hours_back=24):
     return traces
 
 
-def load_call_traces():
-    if os.path.exists(CALL_TRACES_JSON):
+def _to_safe_float(v, default=0.0):
+    try:
+        result = float(v)
+        if math.isnan(result) or math.isinf(result):
+            return default
+        return result
+    except Exception:
+        return default
+
+
+def _to_safe_int(v, default=0):
+    try:
+        return int(v)
+    except Exception:
         try:
-            with open(CALL_TRACES_JSON, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if data and "traces" in data and len(data["traces"]) > 0:
-                    return data["traces"]
+            f = float(v)
+            if math.isnan(f) or math.isinf(f):
+                return default
+            return int(f)
         except Exception:
-            pass
-    dep_data = load_dependencies()
-    traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
-    save_call_traces(traces)
-    return traces
+            return default
 
 
-def save_call_traces(traces):
-    with open(CALL_TRACES_JSON, "w", encoding="utf-8") as f:
-        json.dump({"traces": traces}, f, ensure_ascii=False, indent=2)
+def _normalize_trace(t):
+    if not isinstance(t, dict):
+        return None
+    try:
+        result = {}
+        result["trace_id"] = str(t.get("trace_id", ""))
+        result["span_id"] = str(t.get("span_id", ""))
+        result["parent_span_id"] = str(t.get("parent_span_id", ""))
+        result["depth"] = _to_safe_int(t.get("depth", 0), 0)
+        result["source_service_id"] = str(t.get("source_service_id", ""))
+        result["source_service_name"] = str(t.get("source_service_name", ""))
+        result["source_service_type"] = str(t.get("source_service_type", ""))
+        result["target_service_id"] = str(t.get("target_service_id", ""))
+        result["target_service_name"] = str(t.get("target_service_name", ""))
+        result["target_service_type"] = str(t.get("target_service_type", ""))
+        result["timestamp"] = str(t.get("timestamp", ""))
+        result["start_time_ms"] = _to_safe_float(t.get("start_time_ms", 0), 0.0)
+        result["duration_ms"] = _to_safe_float(t.get("duration_ms", t.get("response_time_ms", 0)), 0.0)
+        result["response_time_ms"] = _to_safe_float(t.get("response_time_ms", 0), 0.0)
+        result["method"] = str(t.get("method", "GET"))
+        result["endpoint"] = str(t.get("endpoint", "/"))
+        result["http_status_code"] = _to_safe_int(t.get("http_status_code", 200), 200)
+        result["request_size_bytes"] = _to_safe_int(t.get("request_size_bytes", 0), 0)
+        result["response_size_bytes"] = _to_safe_int(t.get("response_size_bytes", 0), 0)
+        result["status"] = str(t.get("status", "成功"))
+        result["error_type"] = str(t.get("error_type", "无"))
+        result["error_message"] = str(t.get("error_message", ""))
+        result["description"] = str(t.get("description", ""))
+        result["call_frequency"] = _to_safe_int(t.get("call_frequency", 1000), 1000)
+        tags = t.get("tags", {})
+        result["tags"] = tags if isinstance(tags, dict) else {}
+        if result["trace_id"] and result["source_service_id"] and result["target_service_id"]:
+            return result
+    except Exception:
+        return None
+    return None
 
 
-def refresh_call_traces():
-    dep_data = load_dependencies()
-    traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
-    save_call_traces(traces)
-    return traces
-
-
-def filter_traces_by_service(traces, service_id, direction="both"):
-    if direction == "inbound":
-        return [t for t in traces if t["target_service_id"] == service_id]
-    elif direction == "outbound":
-        return [t for t in traces if t["source_service_id"] == service_id]
-    else:
-        return [t for t in traces if t["source_service_id"] == service_id or t["target_service_id"] == service_id]
-
-
-def get_trace_status_color(status):
-    if status == "成功":
-        return "#10B981"
-    elif status == "超时":
-        return "#F59E0B"
-    elif status == "失败":
-        return "#EF4444"
-    return "#6B7280"
-
-
-def get_error_type_color(error_type):
-    if error_type == "无":
-        return "#10B981"
-    error_colors = {
-        "连接超时": "#F59E0B",
-        "服务不可用": "#EF4444",
-        "权限错误": "#8B5CF6",
-        "参数错误": "#F59E0B",
-        "内部错误": "#EF4444",
-        "数据库错误": "#DC2626",
-        "网络错误": "#F97316"
-    }
-    return error_colors.get(error_type, "#6B7280")
-
-
-def compute_trace_summary(traces):
-    if not traces:
-        return {
-            "total_count": 0,
-            "success_count": 0,
-            "failure_count": 0,
-            "timeout_count": 0,
-            "success_rate": 0.0,
-            "avg_response_time": 0.0,
-            "p95_response_time": 0.0,
-            "p99_response_time": 0.0,
-            "max_response_time": 0.0,
-            "error_types": {}
-        }
-
-    total = len(traces)
-    success = len([t for t in traces if t["status"] == "成功"])
-    failure = len([t for t in traces if t["status"] == "失败"])
-    timeout = len([t for t in traces if t["status"] == "超时"])
-    rts = [t["response_time_ms"] for t in traces]
-    rts_sorted = sorted(rts)
-
-    error_types = {}
-    for t in traces:
-        if t["error_type"] != "无":
-            error_types[t["error_type"]] = error_types.get(t["error_type"], 0) + 1
-
-    p95_idx = int(len(rts_sorted) * 0.95) if len(rts_sorted) > 0 else 0
-    p99_idx = int(len(rts_sorted) * 0.99) if len(rts_sorted) > 0 else 0
-
-    return {
-        "total_count": total,
-        "success_count": success,
-        "failure_count": failure,
-        "timeout_count": timeout,
-        "success_rate": round(success / total * 100, 2) if total > 0 else 0.0,
-        "avg_response_time": round(float(np.mean(rts)), 1) if rts else 0.0,
-        "p95_response_time": rts_sorted[p95_idx] if p95_idx < len(rts_sorted) else (rts_sorted[-1] if rts_sorted else 0.0),
-        "p99_response_time": rts_sorted[p99_idx] if p99_idx < len(rts_sorted) else (rts_sorted[-1] if rts_sorted else 0.0),
-        "max_response_time": max(rts) if rts else 0.0,
-        "error_types": error_types
-    }
-
-
-def build_trace_chain(traces, trace_id):
-    target = next((t for t in traces if t["trace_id"] == trace_id), None)
-    if not target:
-        return []
-
-    same_trace = [t for t in traces if t.get("trace_id") == trace_id]
-    if len(same_trace) > 1:
-        same_trace.sort(key=lambda x: (x.get("depth", 0), x.get("start_time_ms", 0)))
-        return same_trace
-
-    chain = [target]
-    visited = {trace_id}
-
-    current = target
-    for _ in range(5):
-        parent = next((t for t in traces if t["target_service_id"] == current["source_service_id"]
-                       and t["trace_id"] not in visited
-                       and abs((datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") -
-                                datetime.strptime(current["timestamp"], "%Y-%m-%d %H:%M:%S")).total_seconds()) < 60), None)
-        if parent:
-            chain.insert(0, parent)
-            visited.add(parent["trace_id"])
-            current = parent
+def _trace_to_native(t):
+    result = {}
+    for k, v in t.items():
+        if isinstance(v, (np.integer,)):
+            result[k] = int(v)
+        elif isinstance(v, (np.floating,)):
+            fv = float(v)
+            if math.isnan(fv) or math.isinf(fv):
+                result[k] = 0.0
+            else:
+                result[k] = fv
+        elif isinstance(v, np.ndarray):
+            try:
+                result[k] = v.tolist()
+            except Exception:
+                result[k] = []
+        elif isinstance(v, (np.bool_,)):
+            result[k] = bool(v)
+        elif isinstance(v, float):
+            if math.isnan(v) or math.isinf(v):
+                result[k] = 0.0
+            else:
+                result[k] = v
+        elif isinstance(v, dict):
+            result[k] = _trace_to_native(v)
+        elif isinstance(v, list):
+            result[k] = [_trace_to_native({"_v": x})["_v"] if isinstance(x, (dict, list)) else
+                         (int(x) if isinstance(x, (np.integer,)) else
+                          (float(x) if not (math.isnan(float(x)) or math.isinf(float(x))) else 0.0)
+                          if isinstance(x, (np.floating,)) else x)
+                         for x in v]
         else:
-            break
-
-    current = target
-    for _ in range(5):
-        child = next((t for t in traces if t["source_service_id"] == current["target_service_id"]
-                      and t["trace_id"] not in visited
-                      and abs((datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") -
-                               datetime.strptime(current["timestamp"], "%Y-%m-%d %H:%M:%S")).total_seconds()) < 60), None)
-        if child:
-            chain.append(child)
-            visited.add(child["trace_id"])
-            current = child
-        else:
-            break
-
-    return chain
-
-
-def build_trace_tree(traces, trace_id):
-    chain = build_trace_chain(traces, trace_id)
-    if not chain:
-        return []
-    span_map = {}
-    roots = []
-    for span in chain:
-        span_id = span.get("span_id", span["trace_id"])
-        span_map[span_id] = {**span, "children": []}
-
-    for span_id, span_data in span_map.items():
-        parent_id = span_data.get("parent_span_id", "")
-        if parent_id and parent_id in span_map:
-            span_map[parent_id]["children"].append(span_data)
-        else:
-            roots.append(span_data)
-
-    for root in roots:
-        root["children"].sort(key=lambda x: x.get("start_time_ms", 0))
-
-    return roots
-
-
-def get_trace_tree_flat(trace_tree, level=0, result=None):
-    if result is None:
-        result = []
-    for node in trace_tree:
-        node["_level"] = level
-        result.append(node)
-        if node.get("children"):
-            get_trace_tree_flat(node["children"], level + 1, result)
+            result[k] = v
     return result
 
 
-def render_trace_timeline(traces, trace_id):
-    chain = build_trace_chain(traces, trace_id)
-    if not chain:
-        return None
+def load_call_traces():
+    if not os.path.exists(DATA_DIR):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+        except Exception:
+            pass
 
-    tree = build_trace_tree(traces, trace_id)
-    flat_spans = get_trace_tree_flat(tree)
+    traces_from_file = []
+    file_valid = False
 
-    if not flat_spans:
-        flat_spans = sorted(chain, key=lambda x: x.get("start_time_ms", 0))
-        for s in flat_spans:
-            s["_level"] = s.get("depth", 0)
+    if os.path.exists(CALL_TRACES_JSON):
+        try:
+            with open(CALL_TRACES_JSON, "r", encoding="utf-8") as f:
+                file_content = f.read()
+            if file_content and file_content.strip():
+                data = json.loads(file_content)
+                if isinstance(data, dict) and "traces" in data and isinstance(data["traces"], list):
+                    raw_traces = data["traces"]
+                    valid_traces = []
+                    for t in raw_traces:
+                        norm = _normalize_trace(t)
+                        if norm:
+                            valid_traces.append(norm)
+                    if valid_traces:
+                        traces_from_file = valid_traces
+                        file_valid = True
+        except Exception as e:
+            print(f"[WARN] 加载 call_traces.json 失败: {e}，将重新生成数据")
 
-    start_times = [s.get("start_time_ms", 0) for s in flat_spans if s.get("start_time_ms")]
-    min_start = min(start_times) if start_times else 0
-    durations = [s.get("duration_ms", s.get("response_time_ms", 0)) for s in flat_spans]
-    max_end = max([s.get("start_time_ms", 0) + s.get("duration_ms", s.get("response_time_ms", 0)) for s in flat_spans]) if flat_spans else 0
-    total_duration = max(1, max_end - min_start)
+    if not file_valid or not traces_from_file:
+        try:
+            dep_data = load_dependencies()
+            traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
+            if traces:
+                normalized = [_normalize_trace(t) for t in traces]
+                normalized = [t for t in normalized if t]
+                if save_call_traces(normalized):
+                    return normalized
+                return normalized
+        except Exception as e:
+            print(f"[ERROR] 生成调用链路数据失败: {e}")
 
-    fig = go.Figure()
+    if traces_from_file:
+        return traces_from_file
 
-    max_level = max([s.get("_level", 0) for s in flat_spans]) if flat_spans else 0
+    try:
+        dep_data = load_dependencies()
+        traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
+        if traces:
+            normalized = [_normalize_trace(t) for t in traces]
+            return [t for t in normalized if t]
+    except Exception:
+        pass
 
-    for idx, span in enumerate(reversed(flat_spans)):
-        level = span.get("_level", 0)
-        y_pos = idx
-        start_offset = span.get("start_time_ms", 0) - min_start
-        duration = span.get("duration_ms", span.get("response_time_ms", 0))
-        status_color = get_trace_status_color(span.get("status", "成功"))
-
-        label = f"{span['source_service_name']} → {span['target_service_name']}"
-        method = span.get("method", "")
-        endpoint = span.get("endpoint", "")
-
-        fig.add_trace(go.Bar(
-            y=[y_pos],
-            x=[duration],
-            base=[start_offset],
-            orientation="h",
-            marker=dict(
-                color=status_color,
-                line=dict(color="white", width=2)
-            ),
-            hovertemplate=(
-                f"<b>{label}</b><br>"
-                f"Method: {method}<br>"
-                f"Endpoint: {endpoint}<br>"
-                f"Start: +{start_offset:.0f}ms<br>"
-                f"Duration: {duration:.0f}ms<br>"
-                f"Status: {span.get('status', '')}<br>"
-                f"HTTP: {span.get('http_status_code', '')}"
-                + (f"<br>Error: {span.get('error_type', '')}" if span.get('error_type', '无') != '无' else "")
-                + "<extra></extra>"
-            ),
-            showlegend=False,
-            name=label,
-            textposition="inside",
-            insidetextanchor="middle"
-        ))
-
-        fig.add_annotation(
-            x=start_offset + duration / 2,
-            y=y_pos,
-            text=f"{label} · {duration:.0f}ms",
-            showarrow=False,
-            font=dict(color="white", size=10, family="Arial"),
-            xanchor="center"
-        )
-
-    y_labels = []
-    for span in reversed(flat_spans):
-        indent = "  " * span.get("_level", 0)
-        y_labels.append(f"{indent}{span['source_service_name']} → {span['target_service_name']}")
-
-    fig.update_layout(
-        height=max(200, len(flat_spans) * 45 + 60),
-        margin=dict(l=20, r=20, t=30, b=40),
-        xaxis=dict(
-            title="时间偏移 (ms)",
-            showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
-            zeroline=True,
-            zerolinecolor="rgba(0,0,0,0.1)"
-        ),
-        yaxis=dict(
-            showticklabels=True,
-            tickvals=list(range(len(flat_spans))),
-            ticktext=y_labels,
-            tickfont=dict(size=10)
-        ),
-        barmode="overlay",
-        plot_bgcolor="rgba(249, 250, 251, 1)",
-        paper_bgcolor="white",
-        title=dict(
-            text=f"🔗 调用链路时间线 · Trace ID: {trace_id[:20]}...",
-            x=0.5,
-            xanchor="center",
-            font=dict(size=14)
-        ),
-        showlegend=False
-    )
-
-    return fig
+    return []
 
 
-def render_trace_waterfall(traces, trace_id):
-    chain = build_trace_chain(traces, trace_id)
-    if not chain:
-        return None
+def save_call_traces(traces):
+    if not os.path.exists(DATA_DIR):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+        except Exception:
+            pass
+    try:
+        if not isinstance(traces, list):
+            traces = []
+        normalized_traces = []
+        for t in traces:
+            try:
+                nt = _normalize_trace(t)
+                if nt:
+                    native_t = _trace_to_native(nt)
+                    normalized_traces.append(native_t)
+            except Exception:
+                continue
 
-    sorted_chain = sorted(chain, key=lambda x: x.get("start_time_ms", 0))
+        temp_path = CALL_TRACES_JSON + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump({"traces": normalized_traces}, f, ensure_ascii=False, indent=2)
 
-    labels = []
-    start_offsets = []
-    durations = []
-    colors = []
-    hover_texts = []
+        if os.path.exists(temp_path):
+            try:
+                if os.path.exists(CALL_TRACES_JSON):
+                    try:
+                        os.remove(CALL_TRACES_JSON)
+                    except Exception:
+                        pass
+                os.rename(temp_path, CALL_TRACES_JSON)
+            except Exception:
+                try:
+                    import shutil
+                    shutil.move(temp_path, CALL_TRACES_JSON)
+                except Exception:
+                    pass
+        return True
+    except Exception as e:
+        print(f"[ERROR] 保存 call_traces.json 失败: {e}")
+        try:
+            if os.path.exists(CALL_TRACES_JSON + ".tmp"):
+                os.remove(CALL_TRACES_JSON + ".tmp")
+        except Exception:
+            pass
+        return False
 
-    start_times = [s.get("start_time_ms", 0) for s in sorted_chain if s.get("start_time_ms")]
-    min_start = min(start_times) if start_times else 0
 
-    for span in sorted_chain:
-        start_offset = span.get("start_time_ms", 0) - min_start
-        duration = span.get("duration_ms", span.get("response_time_ms", 0))
-        status_color = get_trace_status_color(span.get("status", "成功"))
-
-        labels.append(f"{span['source_service_name'][:10]}→{span['target_service_name'][:10]}")
-        start_offsets.append(start_offset)
-        durations.append(duration)
-        colors.append(status_color)
-
-        error_info = f"<br>❌ {span.get('error_type', '')}" if span.get('error_type', '无') != '无' else ""
-        hover_texts.append(
-            f"<b>{span['source_service_name']} → {span['target_service_name']}</b><br>"
-            f"{span.get('method', '')} {span.get('endpoint', '')}<br>"
-            f"响应时间: {duration:.0f}ms | 状态: {span.get('status', '')}<br>"
-            f"HTTP {span.get('http_status_code', '')}{error_info}"
-        )
-
-    fig = go.Figure(go.Waterfall(
-        orientation="h",
-        y=labels,
-        x=durations,
-        base=start_offsets,
-        marker=dict(
-            color=colors,
-            line=dict(color="white", width=1)
-        ),
-        text=[f"{d:.0f}ms" for d in durations],
-        textposition="outside",
-        hovertext=hover_texts,
-        hoverinfo="text",
-        decreasing=dict(marker=dict(color="#EF4444")),
-        increasing=dict(marker=dict(color="#10B981")),
-        totals=dict(marker=dict(color="#3B82F6"))
-    ))
-
-    fig.update_layout(
-        height=max(250, len(sorted_chain) * 40 + 60),
-        margin=dict(l=10, r=30, t=40, b=30),
-        xaxis_title="时间 (ms)",
-        title=dict(text="📊 调用瀑布图", x=0.5, xanchor="center", font=dict(size=13)),
-        plot_bgcolor="rgba(249, 250, 251, 1)",
-        paper_bgcolor="white",
-        showlegend=False
-    )
-
-    return fig
+def refresh_call_traces():
+    try:
+        dep_data = load_dependencies()
+        traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
+        normalized = [_normalize_trace(t) for t in traces]
+        normalized = [t for t in normalized if t]
+        if save_call_traces(normalized):
+            return normalized
+        return normalized
+    except Exception as e:
+        print(f"[ERROR] 刷新调用链路数据失败: {e}")
+    return []
 
 
 def get_node_by_id(dep_data, node_id):
@@ -4561,43 +4504,60 @@ def render_dependency_page():
                     elif trace["source_service_id"] == selected_node_id:
                         arrow_dir = "↗"
 
+                trace_id_for_key = trace["trace_id"].replace("-", "_")
                 with st.container():
-                    card_cols = st.columns([12, 1])
-                    with card_cols[0]:
-                        st.markdown(f"""
-                        <div style="padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; background-color: {bg_style}; border: {border_style}; cursor: pointer;">
-                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
-                                <div style="font-weight: 600; font-size: 14px;">
-                                    <span style="color: #6B7280; font-weight: 400; font-size: 12px;">{arrow_dir}</span>
-                                    &nbsp;{trace['source_service_name']}
-                                    &nbsp;<span style="color: #9CA3AF;">→</span>&nbsp;
-                                    <span style="color: #1F2937;">{trace['target_service_name']}</span>
-                                    <span style="margin-left: 8px; padding: 1px 8px; border-radius: 10px; background-color: #F3F4F6; color: #374151; font-size: 11px; font-weight: 500;">
-                                        {trace['method']}
-                                    </span>
-                                </div>
-                                <span style="padding: 2px 10px; border-radius: 10px; background-color: {status_color}; color: white; font-size: 11px; font-weight: 600;">
-                                    {trace['status']}
+                    st.markdown(f"""
+                    <div style="padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; background-color: {bg_style}; border: {border_style}; cursor: pointer;">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+                            <div style="font-weight: 600; font-size: 14px;">
+                                <span style="color: #6B7280; font-weight: 400; font-size: 12px;">{arrow_dir}</span>
+                                &nbsp;{trace['source_service_name']}
+                                &nbsp;<span style="color: #9CA3AF;">→</span>&nbsp;
+                                <span style="color: #1F2937;">{trace['target_service_name']}</span>
+                                <span style="margin-left: 8px; padding: 1px 8px; border-radius: 10px; background-color: #F3F4F6; color: #374151; font-size: 11px; font-weight: 500;">
+                                    {trace['method']}
                                 </span>
                             </div>
-                            <div style="font-size: 12px; color: #6B7280; margin-bottom: 4px;">
-                                {trace['endpoint']}
-                            </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
-                                <span style="color: #9CA3AF;">🕒 {trace['timestamp']}</span>
-                                <span>
-                                    <strong style="color: #1F2937;">{trace['response_time_ms']:.0f} ms</strong>
-                                    &nbsp;·&nbsp;
-                                    <span style="color: #6B7280;">HTTP {trace['http_status_code']}</span>
-                                    {f"&nbsp;·&nbsp;<span style='color: #EF4444;'>{trace['error_type']}</span>" if trace['error_type'] != '无' else ''}
-                                </span>
-                            </div>
+                            <span style="padding: 2px 10px; border-radius: 10px; background-color: {status_color}; color: white; font-size: 11px; font-weight: 600;">
+                                {trace['status']}
+                            </span>
                         </div>
-                        """, unsafe_allow_html=True)
-                    with card_cols[1]:
-                        if st.button("查看", key=f"view_trace_{idx}", use_container_width=True, type="primary" if is_selected else "secondary"):
-                            st.session_state["trace_selected_detail"] = trace["trace_id"]
-                            st.rerun()
+                        <div style="font-size: 12px; color: #6B7280; margin-bottom: 4px;">
+                            {trace['endpoint']}
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
+                            <span style="color: #9CA3AF;">🕒 {trace['timestamp']}</span>
+                            <span>
+                                <strong style="color: #1F2937;">{trace['response_time_ms']:.0f} ms</strong>
+                                &nbsp;·&nbsp;
+                                <span style="color: #6B7280;">HTTP {trace['http_status_code']}</span>
+                                {f"&nbsp;·&nbsp;<span style='color: #EF4444;'>{trace['error_type']}</span>" if trace['error_type'] != '无' else ''}
+                            </span>
+                        </div>
+                    </div>
+                    <style>
+                    .trace-card-{trace_id_for_key}_{idx} {{
+                        margin-top: -61px !important;
+                        position: relative;
+                        z-index: 10;
+                    }}
+                    .trace-card-{trace_id_for_key}_{idx} button {{
+                        opacity: 0 !important;
+                        height: 61px !important;
+                        border: none !important;
+                        background: transparent !important;
+                        box-shadow: none !important;
+                    }}
+                    .trace-card-{trace_id_for_key}_{idx} button p {{
+                        color: transparent !important;
+                    }}
+                    </style>
+                    """, unsafe_allow_html=True)
+                    st.markdown(f'<div class="trace-card-{trace_id_for_key}_{idx}">', unsafe_allow_html=True)
+                    if st.button(" ", key=f"trace_click_{trace_id_for_key}_{idx}", use_container_width=True):
+                        st.session_state["trace_selected_detail"] = trace["trace_id"]
+                        st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
 
             if len(filtered_traces) > 100:
                 st.caption(f"📋 仅显示前 100 条记录，共 {len(filtered_traces)} 条。请调整筛选条件缩小范围。")
