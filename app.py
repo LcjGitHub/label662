@@ -59,10 +59,15 @@ ALERTS_CSV = os.path.join(DATA_DIR, "alerts.csv")
 THRESHOLDS_CSV = os.path.join(DATA_DIR, "thresholds.csv")
 SERVICE_STATUS_CSV = os.path.join(DATA_DIR, "service_status.csv")
 DEPENDENCIES_JSON = os.path.join(DATA_DIR, "service_dependencies.json")
+CALL_TRACES_JSON = os.path.join(DATA_DIR, "call_traces.json")
 SLA_CONFIG_JSON = os.path.join(DATA_DIR, "sla_config.json")
 SLA_HISTORY_JSON = os.path.join(DATA_DIR, "sla_history.json")
 CAPACITY_CONFIG_JSON = os.path.join(DATA_DIR, "capacity_config.json")
 INSTANCE_COST_JSON = os.path.join(DATA_DIR, "instance_cost.json")
+
+CALL_STATUS_OPTIONS = ["成功", "失败", "超时"]
+ERROR_TYPE_OPTIONS = ["无", "连接超时", "服务不可用", "权限错误", "参数错误", "内部错误", "数据库错误", "网络错误"]
+HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -1348,6 +1353,630 @@ def load_dependencies():
         with open(DEPENDENCIES_JSON, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"nodes": [], "edges": []}
+
+
+def generate_trace_id():
+    return f"TRACE{datetime.now().strftime('%Y%m%d%H%M%S')}{np.random.randint(100000, 999999)}"
+
+
+def generate_span_id():
+    return f"SPAN{datetime.now().strftime('%H%M%S')}{np.random.randint(10000, 99999)}"
+
+
+def generate_mock_call_traces(dep_data, count=300, hours_back=24):
+    traces = []
+    edges = dep_data.get("edges", [])
+    nodes = dep_data.get("nodes", [])
+    node_map = {n["id"]: n for n in nodes}
+
+    if not edges:
+        return traces
+
+    now = datetime.now()
+    np.random.seed(hash(now.strftime("%Y%m%d%H")) % 2**32)
+
+    endpoints_map = {
+        "网关服务": ["/api/v1/users", "/api/v1/orders", "/api/v1/products", "/api/v1/auth/login"],
+        "认证服务": ["/auth/token", "/auth/verify", "/auth/refresh", "/user/profile"],
+        "数据库": ["/query/execute", "/transaction/begin", "/connection/ping"],
+        "缓存服务": ["/cache/get", "/cache/set", "/cache/delete", "/cache/expire"],
+        "存储服务": ["/file/upload", "/file/download", "/file/delete", "/file/metadata"],
+        "消息服务": ["/message/publish", "/message/subscribe", "/message/ack"],
+        "搜索服务": ["/search/query", "/search/index", "/search/suggest"],
+        "支付服务": ["/payment/create", "/payment/query", "/payment/refund", "/payment/callback"],
+        "通知服务": ["/notify/email", "/notify/sms", "/notify/push"],
+        "网络服务": ["/proxy/forward", "/cdn/purge", "/lb/health"],
+        "监控服务": ["/metric/collect", "/log/write", "/alert/push"],
+        "AI 服务": ["/ai/recognize", "/ai/classify", "/ai/ocr", "/ai/analyze"]
+    }
+
+    error_type_weights = [0.85, 0.03, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
+
+    chain_builder_traces = []
+
+    def build_call_chain(root_edge, chain_start_time, depth=0, max_depth=3):
+        chain = []
+        if depth >= max_depth:
+            return chain
+
+        src_node = node_map.get(root_edge["source"], {})
+        tgt_node = node_map.get(root_edge["target"], {})
+
+        error_idx = np.random.choice(len(ERROR_TYPE_OPTIONS), p=error_type_weights)
+        error_type = ERROR_TYPE_OPTIONS[error_idx]
+        is_success = error_type == "无"
+        is_timeout = error_type == "连接超时"
+
+        if is_success:
+            status = "成功"
+            base_rt = float(root_edge.get("call_frequency", 10000))
+            base_rt = max(5.0, min(500.0, 100000.0 / base_rt * 50))
+            response_time = round(base_rt * np.random.uniform(0.6, 1.8), 1)
+            http_status = np.random.choice([200, 200, 200, 201, 204])
+        elif is_timeout:
+            status = "超时"
+            response_time = round(np.random.uniform(3000, 10000), 1)
+            http_status = 504
+        else:
+            status = "失败"
+            response_time = round(np.random.uniform(50, 2000), 1)
+            http_status = np.random.choice([400, 401, 403, 404, 500, 502, 503])
+
+        tgt_type = tgt_node.get("type", "网关服务")
+        endpoints = endpoints_map.get(tgt_type, ["/api/endpoint"])
+        endpoint = endpoints[np.random.randint(0, len(endpoints))]
+
+        src_type = src_node.get("type", "网关服务")
+        if src_type in ["消息服务"]:
+            method = "PUSH"
+        else:
+            method = HTTP_METHODS[np.random.choice(len(HTTP_METHODS), p=[0.5, 0.3, 0.1, 0.05, 0.05])]
+
+        error_message = ""
+        if not is_success:
+            error_messages = {
+                "连接超时": "Connection timed out after 30000ms",
+                "服务不可用": "Service unavailable - 503 status returned",
+                "权限错误": "Authentication failed - invalid token",
+                "参数错误": "Validation failed - missing required field",
+                "内部错误": "Internal server error - NullPointerException",
+                "数据库错误": "Database connection refused - too many connections",
+                "网络错误": "Network unreachable - DNS resolution failed"
+            }
+            error_message = error_messages.get(error_type, "Unknown error occurred")
+
+        root_trace_id = generate_trace_id()
+        root_span_id = generate_span_id()
+
+        tags = {
+            "http.method": method,
+            "http.url": endpoint,
+            "http.status_code": str(http_status),
+            "service.caller": src_node.get("name", ""),
+            "service.callee": tgt_node.get("name", ""),
+            "db.statement": "" if tgt_type != "数据库" else f"SELECT * FROM table_{np.random.randint(1, 20)} LIMIT 100",
+            "cache.key": "" if tgt_type != "缓存服务" else f"user:session:{np.random.randint(1000, 9999)}",
+            "request.id": f"REQ{np.random.randint(100000, 999999)}",
+            "user.agent": np.random.choice(["Mozilla/5.0", "curl/7.68.0", "PostmanRuntime/7.29.0", "python-requests/2.28.0"]),
+            "client.ip": f"{np.random.randint(10, 255)}.{np.random.randint(0, 255)}.{np.random.randint(0, 255)}.{np.random.randint(1, 255)}"
+        }
+
+        root_trace = {
+            "trace_id": root_trace_id,
+            "span_id": root_span_id,
+            "parent_span_id": "",
+            "depth": depth,
+            "timestamp": chain_start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp_dt": chain_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
+            "start_time_ms": int(chain_start_time.timestamp() * 1000),
+            "duration_ms": response_time,
+            "source_service_id": root_edge["source"],
+            "source_service_name": src_node.get("name", root_edge["source"]),
+            "source_service_type": src_node.get("type", ""),
+            "target_service_id": root_edge["target"],
+            "target_service_name": tgt_node.get("name", root_edge["target"]),
+            "target_service_type": tgt_node.get("type", ""),
+            "method": method,
+            "endpoint": endpoint,
+            "response_time_ms": response_time,
+            "status": status,
+            "http_status_code": http_status,
+            "error_type": error_type,
+            "error_message": error_message,
+            "request_size_bytes": int(np.random.randint(100, 50000)),
+            "response_size_bytes": int(np.random.randint(200, 200000)),
+            "call_frequency": root_edge.get("call_frequency", 1000),
+            "description": root_edge.get("description", ""),
+            "tags": tags
+        }
+        chain.append(root_trace)
+
+        downstream_edges = [e for e in edges if e["source"] == root_edge["target"]]
+        if downstream_edges and depth < max_depth - 1 and np.random.random() < 0.7:
+            num_child_calls = np.random.randint(1, min(3, len(downstream_edges)) + 1)
+            selected_child_edges = np.random.choice(downstream_edges, size=min(num_child_calls, len(downstream_edges)), replace=False)
+
+            cumulative_offset = 0
+            for child_edge in selected_child_edges:
+                child_start_offset = np.random.uniform(1, max(2, response_time * 0.3))
+                cumulative_offset += child_start_offset
+                child_call_time = chain_start_time + timedelta(milliseconds=cumulative_offset)
+                child_traces = build_call_chain(child_edge, child_call_time, depth + 1, max_depth)
+
+                for ct in child_traces:
+                    ct["trace_id"] = root_trace_id
+                    if ct["depth"] == depth + 1:
+                        ct["parent_span_id"] = root_span_id
+                    chain.append(ct)
+
+        return chain
+
+    chain_count = max(20, count // 6)
+    for _ in range(chain_count):
+        edge = edges[np.random.randint(0, len(edges))]
+        call_time = now - timedelta(
+            hours=np.random.randint(0, hours_back),
+            minutes=np.random.randint(0, 60),
+            seconds=np.random.randint(0, 60),
+            milliseconds=np.random.randint(0, 1000)
+        )
+        chain_traces = build_call_chain(edge, call_time, depth=0, max_depth=np.random.randint(2, 5))
+        chain_builder_traces.extend(chain_traces)
+
+    remaining = max(0, count - len(chain_builder_traces))
+    for i in range(remaining):
+        edge = edges[np.random.randint(0, len(edges))]
+        src_node = node_map.get(edge["source"], {})
+        tgt_node = node_map.get(edge["target"], {})
+
+        call_time = now - timedelta(
+            hours=np.random.randint(0, hours_back),
+            minutes=np.random.randint(0, 60),
+            seconds=np.random.randint(0, 60),
+            milliseconds=np.random.randint(0, 1000)
+        )
+
+        error_idx = np.random.choice(len(ERROR_TYPE_OPTIONS), p=error_type_weights)
+        error_type = ERROR_TYPE_OPTIONS[error_idx]
+        is_success = error_type == "无"
+        is_timeout = error_type == "连接超时"
+
+        if is_success:
+            status = "成功"
+            base_rt = float(edge.get("call_frequency", 10000))
+            base_rt = max(5.0, min(500.0, 100000.0 / base_rt * 50))
+            response_time = round(base_rt * np.random.uniform(0.6, 1.8), 1)
+            http_status = np.random.choice([200, 200, 200, 201, 204])
+        elif is_timeout:
+            status = "超时"
+            response_time = round(np.random.uniform(3000, 10000), 1)
+            http_status = 504
+        else:
+            status = "失败"
+            response_time = round(np.random.uniform(50, 2000), 1)
+            http_status = np.random.choice([400, 401, 403, 404, 500, 502, 503])
+
+        tgt_type = tgt_node.get("type", "网关服务")
+        endpoints = endpoints_map.get(tgt_type, ["/api/endpoint"])
+        endpoint = endpoints[np.random.randint(0, len(endpoints))]
+
+        src_type = src_node.get("type", "网关服务")
+        if src_type in ["消息服务"]:
+            method = "PUSH"
+        else:
+            method = HTTP_METHODS[np.random.choice(len(HTTP_METHODS), p=[0.5, 0.3, 0.1, 0.05, 0.05])]
+
+        error_message = ""
+        if not is_success:
+            error_messages = {
+                "连接超时": "Connection timed out after 30000ms",
+                "服务不可用": "Service unavailable - 503 status returned",
+                "权限错误": "Authentication failed - invalid token",
+                "参数错误": "Validation failed - missing required field",
+                "内部错误": "Internal server error - NullPointerException",
+                "数据库错误": "Database connection refused - too many connections",
+                "网络错误": "Network unreachable - DNS resolution failed"
+            }
+            error_message = error_messages.get(error_type, "Unknown error occurred")
+
+        tags = {
+            "http.method": method,
+            "http.url": endpoint,
+            "http.status_code": str(http_status),
+            "service.caller": src_node.get("name", ""),
+            "service.callee": tgt_node.get("name", ""),
+            "db.statement": "" if tgt_type != "数据库" else f"SELECT * FROM table_{np.random.randint(1, 20)} LIMIT 100",
+            "cache.key": "" if tgt_type != "缓存服务" else f"user:session:{np.random.randint(1000, 9999)}",
+            "request.id": f"REQ{np.random.randint(100000, 999999)}",
+            "user.agent": np.random.choice(["Mozilla/5.0", "curl/7.68.0", "PostmanRuntime/7.29.0", "python-requests/2.28.0"]),
+            "client.ip": f"{np.random.randint(10, 255)}.{np.random.randint(0, 255)}.{np.random.randint(0, 255)}.{np.random.randint(1, 255)}"
+        }
+
+        trace = {
+            "trace_id": generate_trace_id(),
+            "span_id": generate_span_id(),
+            "parent_span_id": "",
+            "depth": 0,
+            "timestamp": call_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp_dt": call_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
+            "start_time_ms": int(call_time.timestamp() * 1000),
+            "duration_ms": response_time,
+            "source_service_id": edge["source"],
+            "source_service_name": src_node.get("name", edge["source"]),
+            "source_service_type": src_node.get("type", ""),
+            "target_service_id": edge["target"],
+            "target_service_name": tgt_node.get("name", edge["target"]),
+            "target_service_type": tgt_node.get("type", ""),
+            "method": method,
+            "endpoint": endpoint,
+            "response_time_ms": response_time,
+            "status": status,
+            "http_status_code": http_status,
+            "error_type": error_type,
+            "error_message": error_message,
+            "request_size_bytes": int(np.random.randint(100, 50000)),
+            "response_size_bytes": int(np.random.randint(200, 200000)),
+            "call_frequency": edge.get("call_frequency", 1000),
+            "description": edge.get("description", ""),
+            "tags": tags
+        }
+        traces.append(trace)
+
+    traces.extend(chain_builder_traces)
+
+    traces.sort(key=lambda x: x["timestamp"], reverse=True)
+    return traces
+
+
+def load_call_traces():
+    if os.path.exists(CALL_TRACES_JSON):
+        try:
+            with open(CALL_TRACES_JSON, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data and "traces" in data and len(data["traces"]) > 0:
+                    return data["traces"]
+        except Exception:
+            pass
+    dep_data = load_dependencies()
+    traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
+    save_call_traces(traces)
+    return traces
+
+
+def save_call_traces(traces):
+    with open(CALL_TRACES_JSON, "w", encoding="utf-8") as f:
+        json.dump({"traces": traces}, f, ensure_ascii=False, indent=2)
+
+
+def refresh_call_traces():
+    dep_data = load_dependencies()
+    traces = generate_mock_call_traces(dep_data, count=300, hours_back=24)
+    save_call_traces(traces)
+    return traces
+
+
+def filter_traces_by_service(traces, service_id, direction="both"):
+    if direction == "inbound":
+        return [t for t in traces if t["target_service_id"] == service_id]
+    elif direction == "outbound":
+        return [t for t in traces if t["source_service_id"] == service_id]
+    else:
+        return [t for t in traces if t["source_service_id"] == service_id or t["target_service_id"] == service_id]
+
+
+def get_trace_status_color(status):
+    if status == "成功":
+        return "#10B981"
+    elif status == "超时":
+        return "#F59E0B"
+    elif status == "失败":
+        return "#EF4444"
+    return "#6B7280"
+
+
+def get_error_type_color(error_type):
+    if error_type == "无":
+        return "#10B981"
+    error_colors = {
+        "连接超时": "#F59E0B",
+        "服务不可用": "#EF4444",
+        "权限错误": "#8B5CF6",
+        "参数错误": "#F59E0B",
+        "内部错误": "#EF4444",
+        "数据库错误": "#DC2626",
+        "网络错误": "#F97316"
+    }
+    return error_colors.get(error_type, "#6B7280")
+
+
+def compute_trace_summary(traces):
+    if not traces:
+        return {
+            "total_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "timeout_count": 0,
+            "success_rate": 0.0,
+            "avg_response_time": 0.0,
+            "p95_response_time": 0.0,
+            "p99_response_time": 0.0,
+            "max_response_time": 0.0,
+            "error_types": {}
+        }
+
+    total = len(traces)
+    success = len([t for t in traces if t["status"] == "成功"])
+    failure = len([t for t in traces if t["status"] == "失败"])
+    timeout = len([t for t in traces if t["status"] == "超时"])
+    rts = [t["response_time_ms"] for t in traces]
+    rts_sorted = sorted(rts)
+
+    error_types = {}
+    for t in traces:
+        if t["error_type"] != "无":
+            error_types[t["error_type"]] = error_types.get(t["error_type"], 0) + 1
+
+    p95_idx = int(len(rts_sorted) * 0.95) if len(rts_sorted) > 0 else 0
+    p99_idx = int(len(rts_sorted) * 0.99) if len(rts_sorted) > 0 else 0
+
+    return {
+        "total_count": total,
+        "success_count": success,
+        "failure_count": failure,
+        "timeout_count": timeout,
+        "success_rate": round(success / total * 100, 2) if total > 0 else 0.0,
+        "avg_response_time": round(float(np.mean(rts)), 1) if rts else 0.0,
+        "p95_response_time": rts_sorted[p95_idx] if p95_idx < len(rts_sorted) else (rts_sorted[-1] if rts_sorted else 0.0),
+        "p99_response_time": rts_sorted[p99_idx] if p99_idx < len(rts_sorted) else (rts_sorted[-1] if rts_sorted else 0.0),
+        "max_response_time": max(rts) if rts else 0.0,
+        "error_types": error_types
+    }
+
+
+def build_trace_chain(traces, trace_id):
+    target = next((t for t in traces if t["trace_id"] == trace_id), None)
+    if not target:
+        return []
+
+    same_trace = [t for t in traces if t.get("trace_id") == trace_id]
+    if len(same_trace) > 1:
+        same_trace.sort(key=lambda x: (x.get("depth", 0), x.get("start_time_ms", 0)))
+        return same_trace
+
+    chain = [target]
+    visited = {trace_id}
+
+    current = target
+    for _ in range(5):
+        parent = next((t for t in traces if t["target_service_id"] == current["source_service_id"]
+                       and t["trace_id"] not in visited
+                       and abs((datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") -
+                                datetime.strptime(current["timestamp"], "%Y-%m-%d %H:%M:%S")).total_seconds()) < 60), None)
+        if parent:
+            chain.insert(0, parent)
+            visited.add(parent["trace_id"])
+            current = parent
+        else:
+            break
+
+    current = target
+    for _ in range(5):
+        child = next((t for t in traces if t["source_service_id"] == current["target_service_id"]
+                      and t["trace_id"] not in visited
+                      and abs((datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") -
+                               datetime.strptime(current["timestamp"], "%Y-%m-%d %H:%M:%S")).total_seconds()) < 60), None)
+        if child:
+            chain.append(child)
+            visited.add(child["trace_id"])
+            current = child
+        else:
+            break
+
+    return chain
+
+
+def build_trace_tree(traces, trace_id):
+    chain = build_trace_chain(traces, trace_id)
+    if not chain:
+        return []
+    span_map = {}
+    roots = []
+    for span in chain:
+        span_id = span.get("span_id", span["trace_id"])
+        span_map[span_id] = {**span, "children": []}
+
+    for span_id, span_data in span_map.items():
+        parent_id = span_data.get("parent_span_id", "")
+        if parent_id and parent_id in span_map:
+            span_map[parent_id]["children"].append(span_data)
+        else:
+            roots.append(span_data)
+
+    for root in roots:
+        root["children"].sort(key=lambda x: x.get("start_time_ms", 0))
+
+    return roots
+
+
+def get_trace_tree_flat(trace_tree, level=0, result=None):
+    if result is None:
+        result = []
+    for node in trace_tree:
+        node["_level"] = level
+        result.append(node)
+        if node.get("children"):
+            get_trace_tree_flat(node["children"], level + 1, result)
+    return result
+
+
+def render_trace_timeline(traces, trace_id):
+    chain = build_trace_chain(traces, trace_id)
+    if not chain:
+        return None
+
+    tree = build_trace_tree(traces, trace_id)
+    flat_spans = get_trace_tree_flat(tree)
+
+    if not flat_spans:
+        flat_spans = sorted(chain, key=lambda x: x.get("start_time_ms", 0))
+        for s in flat_spans:
+            s["_level"] = s.get("depth", 0)
+
+    start_times = [s.get("start_time_ms", 0) for s in flat_spans if s.get("start_time_ms")]
+    min_start = min(start_times) if start_times else 0
+    durations = [s.get("duration_ms", s.get("response_time_ms", 0)) for s in flat_spans]
+    max_end = max([s.get("start_time_ms", 0) + s.get("duration_ms", s.get("response_time_ms", 0)) for s in flat_spans]) if flat_spans else 0
+    total_duration = max(1, max_end - min_start)
+
+    fig = go.Figure()
+
+    max_level = max([s.get("_level", 0) for s in flat_spans]) if flat_spans else 0
+
+    for idx, span in enumerate(reversed(flat_spans)):
+        level = span.get("_level", 0)
+        y_pos = idx
+        start_offset = span.get("start_time_ms", 0) - min_start
+        duration = span.get("duration_ms", span.get("response_time_ms", 0))
+        status_color = get_trace_status_color(span.get("status", "成功"))
+
+        label = f"{span['source_service_name']} → {span['target_service_name']}"
+        method = span.get("method", "")
+        endpoint = span.get("endpoint", "")
+
+        fig.add_trace(go.Bar(
+            y=[y_pos],
+            x=[duration],
+            base=[start_offset],
+            orientation="h",
+            marker=dict(
+                color=status_color,
+                line=dict(color="white", width=2)
+            ),
+            hovertemplate=(
+                f"<b>{label}</b><br>"
+                f"Method: {method}<br>"
+                f"Endpoint: {endpoint}<br>"
+                f"Start: +{start_offset:.0f}ms<br>"
+                f"Duration: {duration:.0f}ms<br>"
+                f"Status: {span.get('status', '')}<br>"
+                f"HTTP: {span.get('http_status_code', '')}"
+                + (f"<br>Error: {span.get('error_type', '')}" if span.get('error_type', '无') != '无' else "")
+                + "<extra></extra>"
+            ),
+            showlegend=False,
+            name=label,
+            textposition="inside",
+            insidetextanchor="middle"
+        ))
+
+        fig.add_annotation(
+            x=start_offset + duration / 2,
+            y=y_pos,
+            text=f"{label} · {duration:.0f}ms",
+            showarrow=False,
+            font=dict(color="white", size=10, family="Arial"),
+            xanchor="center"
+        )
+
+    y_labels = []
+    for span in reversed(flat_spans):
+        indent = "  " * span.get("_level", 0)
+        y_labels.append(f"{indent}{span['source_service_name']} → {span['target_service_name']}")
+
+    fig.update_layout(
+        height=max(200, len(flat_spans) * 45 + 60),
+        margin=dict(l=20, r=20, t=30, b=40),
+        xaxis=dict(
+            title="时间偏移 (ms)",
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.05)",
+            zeroline=True,
+            zerolinecolor="rgba(0,0,0,0.1)"
+        ),
+        yaxis=dict(
+            showticklabels=True,
+            tickvals=list(range(len(flat_spans))),
+            ticktext=y_labels,
+            tickfont=dict(size=10)
+        ),
+        barmode="overlay",
+        plot_bgcolor="rgba(249, 250, 251, 1)",
+        paper_bgcolor="white",
+        title=dict(
+            text=f"🔗 调用链路时间线 · Trace ID: {trace_id[:20]}...",
+            x=0.5,
+            xanchor="center",
+            font=dict(size=14)
+        ),
+        showlegend=False
+    )
+
+    return fig
+
+
+def render_trace_waterfall(traces, trace_id):
+    chain = build_trace_chain(traces, trace_id)
+    if not chain:
+        return None
+
+    sorted_chain = sorted(chain, key=lambda x: x.get("start_time_ms", 0))
+
+    labels = []
+    start_offsets = []
+    durations = []
+    colors = []
+    hover_texts = []
+
+    start_times = [s.get("start_time_ms", 0) for s in sorted_chain if s.get("start_time_ms")]
+    min_start = min(start_times) if start_times else 0
+
+    for span in sorted_chain:
+        start_offset = span.get("start_time_ms", 0) - min_start
+        duration = span.get("duration_ms", span.get("response_time_ms", 0))
+        status_color = get_trace_status_color(span.get("status", "成功"))
+
+        labels.append(f"{span['source_service_name'][:10]}→{span['target_service_name'][:10]}")
+        start_offsets.append(start_offset)
+        durations.append(duration)
+        colors.append(status_color)
+
+        error_info = f"<br>❌ {span.get('error_type', '')}" if span.get('error_type', '无') != '无' else ""
+        hover_texts.append(
+            f"<b>{span['source_service_name']} → {span['target_service_name']}</b><br>"
+            f"{span.get('method', '')} {span.get('endpoint', '')}<br>"
+            f"响应时间: {duration:.0f}ms | 状态: {span.get('status', '')}<br>"
+            f"HTTP {span.get('http_status_code', '')}{error_info}"
+        )
+
+    fig = go.Figure(go.Waterfall(
+        orientation="h",
+        y=labels,
+        x=durations,
+        base=start_offsets,
+        marker=dict(
+            color=colors,
+            line=dict(color="white", width=1)
+        ),
+        text=[f"{d:.0f}ms" for d in durations],
+        textposition="outside",
+        hovertext=hover_texts,
+        hoverinfo="text",
+        decreasing=dict(marker=dict(color="#EF4444")),
+        increasing=dict(marker=dict(color="#10B981")),
+        totals=dict(marker=dict(color="#3B82F6"))
+    ))
+
+    fig.update_layout(
+        height=max(250, len(sorted_chain) * 40 + 60),
+        margin=dict(l=10, r=30, t=40, b=30),
+        xaxis_title="时间 (ms)",
+        title=dict(text="📊 调用瀑布图", x=0.5, xanchor="center", font=dict(size=13)),
+        plot_bgcolor="rgba(249, 250, 251, 1)",
+        paper_bgcolor="white",
+        showlegend=False
+    )
+
+    return fig
 
 
 def get_node_by_id(dep_data, node_id):
@@ -3005,6 +3634,14 @@ def render_dependency_page():
         st.session_state["dep_impact_analysis"] = None
     if "dep_impact_service_select" not in st.session_state:
         st.session_state["dep_impact_service_select"] = ""
+    if "trace_selected_detail" not in st.session_state:
+        st.session_state["trace_selected_detail"] = None
+    if "trace_direction" not in st.session_state:
+        st.session_state["trace_direction"] = "both"
+    if "trace_sort_by" not in st.session_state:
+        st.session_state["trace_sort_by"] = "time_desc"
+
+    all_traces = load_call_traces()
 
     all_node_types = sorted(list(set([n["type"] for n in dep_data["nodes"]])))
     all_statuses = ["正常", "警告", "异常"]
@@ -3114,6 +3751,147 @@ def render_dependency_page():
             st.info(f"⚠️ 服务「{impact_node['name']}」异常将影响下游 **{len(affected_names)}** 个服务")
 
         st.divider()
+        st.subheader("🔍 调用链路追踪")
+
+        auto_refresh = st.checkbox(
+            "🔄 自动刷新链路数据",
+            value=False,
+            help="每 30 秒自动刷新调用链路数据",
+            key="trace_auto_refresh"
+        )
+
+        col_refresh1, col_refresh2 = st.columns(2)
+        with col_refresh1:
+            if st.button("🔄 手动刷新", use_container_width=True, type="primary", key="refresh_traces_btn"):
+                all_traces = refresh_call_traces()
+                st.success("✅ 调用链路数据已刷新！")
+                st.rerun()
+        with col_refresh2:
+            trace_count = len(all_traces)
+            st.metric("📋 总记录数", trace_count)
+
+        st.caption("🕒 时间范围筛选")
+        col_tstart, col_tend = st.columns(2)
+        with col_tstart:
+            trace_start_date = st.date_input(
+                "开始日期",
+                value=datetime.now() - timedelta(hours=24),
+                key="trace_start_date"
+            )
+        with col_tend:
+            trace_end_date = st.date_input(
+                "结束日期",
+                value=datetime.now(),
+                key="trace_end_date"
+            )
+
+        time_range_options = ["全部", "最近15分钟", "最近1小时", "最近6小时", "最近12小时", "最近24小时"]
+        selected_time_range = st.selectbox(
+            "快捷时间范围",
+            time_range_options,
+            index=5,
+            help="快速选择常用时间范围",
+            key="trace_time_range"
+        )
+
+        st.caption("⏱️ 响应时间筛选")
+        col_rt_min, col_rt_max = st.columns(2)
+        with col_rt_min:
+            rt_min = st.number_input(
+                "最小响应时间(ms)",
+                min_value=0,
+                max_value=100000,
+                value=0,
+                step=50,
+                help="只显示响应时间大于此值的调用",
+                key="trace_rt_min"
+            )
+        with col_rt_max:
+            rt_max = st.number_input(
+                "最大响应时间(ms)",
+                min_value=0,
+                max_value=100000,
+                value=100000,
+                step=50,
+                help="只显示响应时间小于此值的调用",
+                key="trace_rt_max"
+            )
+
+        st.caption("📊 筛选条件")
+        trace_status_filter = st.multiselect(
+            "调用状态",
+            options=CALL_STATUS_OPTIONS,
+            default=CALL_STATUS_OPTIONS,
+            help="按调用状态筛选",
+            key="trace_status_filter"
+        )
+
+        trace_error_filter = st.multiselect(
+            "错误类型",
+            options=ERROR_TYPE_OPTIONS,
+            default=ERROR_TYPE_OPTIONS,
+            help="按错误类型筛选",
+            key="trace_error_filter"
+        )
+
+        trace_method_filter = st.multiselect(
+            "请求方法",
+            options=HTTP_METHODS,
+            default=HTTP_METHODS,
+            help="按 HTTP 请求方法筛选",
+            key="trace_method_filter"
+        )
+
+        all_service_names_for_filter = sorted(list(set(
+            [t["source_service_name"] for t in all_traces] +
+            [t["target_service_name"] for t in all_traces]
+        )))
+        trace_service_filter = st.multiselect(
+            "涉及服务",
+            options=all_service_names_for_filter,
+            default=[],
+            help="只显示涉及选定服务的调用（留空表示全部）",
+            key="trace_service_filter"
+        )
+
+        trace_sort_options = [
+            ("时间降序（最新优先）", "time_desc"),
+            ("时间升序（最早优先）", "time_asc"),
+            ("响应时间降序（最慢优先）", "rt_desc"),
+            ("响应时间升序（最快优先）", "rt_asc")
+        ]
+        selected_sort = st.selectbox(
+            "排序方式",
+            options=[opt[0] for opt in trace_sort_options],
+            index=0,
+            help="调用记录的排序方式",
+            key="trace_sort_select"
+        )
+        st.session_state["trace_sort_by"] = dict(trace_sort_options)[selected_sort]
+
+        if st.session_state.get("dep_selected_node"):
+            direction_options = [
+                ("全部调用", "both"),
+                ("入站调用", "inbound"),
+                ("出站调用", "outbound")
+            ]
+            selected_direction_label = st.radio(
+                "调用方向",
+                options=[opt[0] for opt in direction_options],
+                index=0,
+                horizontal=True,
+                key="trace_direction_radio"
+            )
+            st.session_state["trace_direction"] = dict(direction_options)[selected_direction_label]
+
+        only_errors = st.checkbox(
+            "❌ 仅显示异常调用",
+            value=False,
+            help="只显示失败或超时的调用记录",
+            key="trace_only_errors"
+        )
+
+        st.divider()
         st.subheader("📋 图例说明")
         legend_html = """
         <div style="font-size: 12px; line-height: 1.8;">
@@ -3124,6 +3902,12 @@ def render_dependency_page():
             <div style="margin-top:6px;"><strong>节点大小</strong>：请求量越大，节点越大</div>
             <div><strong>连线粗细</strong>：调用频率越高，连线越粗</div>
             <div><strong>连线箭头</strong>：指向被调用的服务方向</div>
+        </div>
+        <div style="margin-top:10px; padding-top:8px; border-top:1px solid #E5E7EB;">
+            <div style="font-size:12px; font-weight:600; margin-bottom:4px;">调用状态：</div>
+            <div><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#10B981;margin-right:6px;"></span>成功</div>
+            <div><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#F59E0B;margin-right:6px;"></span>超时</div>
+            <div><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:#EF4444;margin-right:6px;"></span>失败</div>
         </div>
         """
         st.markdown(legend_html, unsafe_allow_html=True)
@@ -3404,6 +4188,63 @@ def render_dependency_page():
         annotations=arrow_annotations
     )
 
+    selected_node_id = st.session_state.get("dep_selected_node")
+    direction = st.session_state.get("trace_direction", "both")
+
+    filtered_traces = all_traces.copy()
+    now = datetime.now()
+    if selected_time_range == "最近15分钟":
+        cutoff = now - timedelta(minutes=15)
+        filtered_traces = [t for t in filtered_traces if datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff]
+    elif selected_time_range == "最近1小时":
+        cutoff = now - timedelta(hours=1)
+        filtered_traces = [t for t in filtered_traces if datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff]
+    elif selected_time_range == "最近6小时":
+        cutoff = now - timedelta(hours=6)
+        filtered_traces = [t for t in filtered_traces if datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff]
+    elif selected_time_range == "最近12小时":
+        cutoff = now - timedelta(hours=12)
+        filtered_traces = [t for t in filtered_traces if datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff]
+    elif selected_time_range == "最近24小时":
+        cutoff = now - timedelta(hours=24)
+        filtered_traces = [t for t in filtered_traces if datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff]
+
+    start_dt = datetime.combine(trace_start_date, datetime.min.time())
+    end_dt = datetime.combine(trace_end_date, datetime.max.time())
+    filtered_traces = [t for t in filtered_traces
+                       if start_dt <= datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M:%S") <= end_dt]
+
+    if trace_status_filter:
+        filtered_traces = [t for t in filtered_traces if t["status"] in trace_status_filter]
+    if trace_error_filter:
+        filtered_traces = [t for t in filtered_traces if t["error_type"] in trace_error_filter]
+    if trace_method_filter:
+        filtered_traces = [t for t in filtered_traces if t["method"] in trace_method_filter]
+
+    filtered_traces = [t for t in filtered_traces
+                       if rt_min <= t["response_time_ms"] <= rt_max]
+
+    if trace_service_filter:
+        filtered_traces = [t for t in filtered_traces
+                           if t["source_service_name"] in trace_service_filter
+                           or t["target_service_name"] in trace_service_filter]
+
+    if only_errors:
+        filtered_traces = [t for t in filtered_traces if t["status"] != "成功"]
+
+    if selected_node_id:
+        filtered_traces = filter_traces_by_service(filtered_traces, selected_node_id, direction)
+
+    sort_by = st.session_state.get("trace_sort_by", "time_desc")
+    if sort_by == "time_desc":
+        filtered_traces.sort(key=lambda x: x["timestamp"], reverse=True)
+    elif sort_by == "time_asc":
+        filtered_traces.sort(key=lambda x: x["timestamp"], reverse=False)
+    elif sort_by == "rt_desc":
+        filtered_traces.sort(key=lambda x: x["response_time_ms"], reverse=True)
+    elif sort_by == "rt_asc":
+        filtered_traces.sort(key=lambda x: x["response_time_ms"], reverse=False)
+
     col_net, col_detail = st.columns([2, 1])
     with col_net:
         st.subheader("🕸️ 服务依赖网络图")
@@ -3416,20 +4257,28 @@ def render_dependency_page():
                     total_edge_traces = len(edge_traces)
                     if pt.trace_index == total_edge_traces and hasattr(pt, "customdata") and pt.customdata is not None:
                         st.session_state["dep_selected_node"] = pt.customdata
+                        st.session_state["trace_selected_detail"] = None
                         break
                 elif hasattr(pt, "customdata") and pt.customdata is not None:
                     st.session_state["dep_selected_node"] = pt.customdata
+                    st.session_state["trace_selected_detail"] = None
                     break
 
     with col_detail:
         st.subheader("📋 服务详情")
-        selected_node_id = st.session_state.get("dep_selected_node")
         if selected_node_id:
             node = get_node_by_id(dep_data, selected_node_id)
             if node:
                 info = service_info.get(node["name"], {})
                 status = info.get("status", "正常")
                 status_color = get_status_color(status)
+
+                svc_all_traces = filter_traces_by_service(all_traces, selected_node_id, "both")
+                svc_inbound_traces = filter_traces_by_service(all_traces, selected_node_id, "inbound")
+                svc_outbound_traces = filter_traces_by_service(all_traces, selected_node_id, "outbound")
+                svc_summary = compute_trace_summary(svc_all_traces)
+                svc_inbound_summary = compute_trace_summary(svc_inbound_traces)
+                svc_outbound_summary = compute_trace_summary(svc_outbound_traces)
 
                 highlight_tag = ""
                 if st.session_state.get("dep_impact_analysis") == selected_node_id:
@@ -3466,10 +4315,107 @@ def render_dependency_page():
                 st.markdown("**🏷️ 服务类型**: " + node["type"])
                 st.markdown("**👥 负责团队**: " + node.get("owner", "N/A"))
 
+                st.divider()
+                st.subheader("📊 调用链路统计")
+
+                call_direction_tabs = st.tabs(["📊 全部调用", "📥 入站调用", "📤 出站调用"])
+
+                with call_direction_tabs[0]:
+                    st.caption(f"共 {svc_summary['total_count']} 条调用记录")
+                    col_t1, col_t2, col_t3 = st.columns(3)
+                    with col_t1:
+                        st.metric("总调用", svc_summary["total_count"])
+                    with col_t2:
+                        rate_color = "#10B981" if svc_summary["success_rate"] >= 99 else ("#F59E0B" if svc_summary["success_rate"] >= 95 else "#EF4444")
+                        st.metric("成功率", f"{svc_summary['success_rate']}%")
+                    with col_t3:
+                        st.metric("平均RT", f"{svc_summary['avg_response_time']:.0f}ms")
+
+                    col_t4, col_t5, col_t6 = st.columns(3)
+                    with col_t4:
+                        st.metric("P95 RT", f"{svc_summary['p95_response_time']:.0f}ms")
+                    with col_t5:
+                        st.metric("P99 RT", f"{svc_summary['p99_response_time']:.0f}ms")
+                    with col_t6:
+                        err_cnt = svc_summary["failure_count"] + svc_summary["timeout_count"]
+                        st.metric("异常数", err_cnt, delta=-err_cnt, delta_color="inverse")
+
+                with call_direction_tabs[1]:
+                    st.caption(f"共 {svc_inbound_summary['total_count']} 条入站调用（其他服务 → 当前服务）")
+                    col_i1, col_i2, col_i3 = st.columns(3)
+                    with col_i1:
+                        st.metric("入站调用", svc_inbound_summary["total_count"])
+                    with col_i2:
+                        in_rate = svc_inbound_summary["success_rate"]
+                        in_color = "#10B981" if in_rate >= 99 else ("#F59E0B" if in_rate >= 95 else "#EF4444")
+                        st.metric("入站成功率", f"{in_rate}%")
+                    with col_i3:
+                        st.metric("入站平均RT", f"{svc_inbound_summary['avg_response_time']:.0f}ms")
+
+                    if svc_inbound_traces:
+                        inbound_by_source = {}
+                        for t in svc_inbound_traces:
+                            src = t["source_service_name"]
+                            if src not in inbound_by_source:
+                                inbound_by_source[src] = {"count": 0, "total_rt": 0}
+                            inbound_by_source[src]["count"] += 1
+                            inbound_by_source[src]["total_rt"] += t["response_time_ms"]
+
+                        with st.expander("🔍 入站调用来源分布", expanded=True):
+                            for src_name, src_stats in sorted(inbound_by_source.items(), key=lambda x: -x[1]["count"]):
+                                avg_rt = src_stats["total_rt"] / src_stats["count"] if src_stats["count"] > 0 else 0
+                                st.markdown(f"""
+                                <div style="padding: 6px 10px; margin-bottom: 4px; border-radius: 4px; background-color: #EFF6FF; border-left: 3px solid #3B82F6;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                                        <span style="font-weight: 600;">{src_name}</span>
+                                        <span>
+                                            <strong>{src_stats['count']}</strong> 次调用 · 
+                                            平均 <strong>{avg_rt:.0f}ms</strong>
+                                        </span>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                with call_direction_tabs[2]:
+                    st.caption(f"共 {svc_outbound_summary['total_count']} 条出站调用（当前服务 → 其他服务）")
+                    col_o1, col_o2, col_o3 = st.columns(3)
+                    with col_o1:
+                        st.metric("出站调用", svc_outbound_summary["total_count"])
+                    with col_o2:
+                        out_rate = svc_outbound_summary["success_rate"]
+                        out_color = "#10B981" if out_rate >= 99 else ("#F59E0B" if out_rate >= 95 else "#EF4444")
+                        st.metric("出站成功率", f"{out_rate}%")
+                    with col_o3:
+                        st.metric("出站平均RT", f"{svc_outbound_summary['avg_response_time']:.0f}ms")
+
+                    if svc_outbound_traces:
+                        outbound_by_target = {}
+                        for t in svc_outbound_traces:
+                            tgt = t["target_service_name"]
+                            if tgt not in outbound_by_target:
+                                outbound_by_target[tgt] = {"count": 0, "total_rt": 0}
+                            outbound_by_target[tgt]["count"] += 1
+                            outbound_by_target[tgt]["total_rt"] += t["response_time_ms"]
+
+                        with st.expander("🔍 出站调用目标分布", expanded=True):
+                            for tgt_name, tgt_stats in sorted(outbound_by_target.items(), key=lambda x: -x[1]["count"]):
+                                avg_rt = tgt_stats["total_rt"] / tgt_stats["count"] if tgt_stats["count"] > 0 else 0
+                                st.markdown(f"""
+                                <div style="padding: 6px 10px; margin-bottom: 4px; border-radius: 4px; background-color: #FEF3C7; border-left: 3px solid #F59E0B;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                                        <span style="font-weight: 600;">{tgt_name}</span>
+                                        <span>
+                                            <strong>{tgt_stats['count']}</strong> 次调用 · 
+                                            平均 <strong>{avg_rt:.0f}ms</strong>
+                                        </span>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
                 upstream = get_upstream_services(dep_data, selected_node_id)
                 downstream = get_downstream_services(dep_data, selected_node_id)
 
-                with st.expander(f"🔻 上游依赖服务（{len(upstream)} 个）", expanded=True):
+                with st.expander(f"🔻 上游依赖服务（{len(upstream)} 个）", expanded=False):
                     if upstream:
                         for up in upstream:
                             up_info = service_info.get(up["name"], {"status": "正常"})
@@ -3485,7 +4431,7 @@ def render_dependency_page():
                     else:
                         st.caption("无上游依赖")
 
-                with st.expander(f"🔺 下游被依赖服务（{len(downstream)} 个）", expanded=True):
+                with st.expander(f"🔺 下游被依赖服务（{len(downstream)} 个）", expanded=False):
                     if downstream:
                         for down in downstream:
                             down_info = service_info.get(down["name"], {"status": "正常"})
@@ -3507,8 +4453,8 @@ def render_dependency_page():
 
     st.divider()
 
-    st.subheader("📊 依赖关系汇总统计")
-    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    st.subheader("📊 依赖关系 & 调用链路汇总统计")
+    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
     with col_s1:
         st.metric(label="🔗 服务节点总数", value=len(dep_data["nodes"]))
     with col_s2:
@@ -3519,11 +4465,306 @@ def render_dependency_page():
     with col_s4:
         alert_count = len([n for n in dep_data["nodes"] if service_info.get(n["name"], {}).get("status") in ["警告", "异常"]])
         st.metric(label="⚠️ 告警服务", value=alert_count, delta=alert_count, delta_color="inverse")
+    with col_s5:
+        global_summary = compute_trace_summary(filtered_traces)
+        st.metric(label="🔍 筛选后调用数", value=global_summary["total_count"])
+    with col_s6:
+        rate = global_summary["success_rate"]
+        delta_color = "normal" if rate >= 95 else "inverse"
+        st.metric(label="✅ 调用成功率", value=f"{rate}%", delta_color=delta_color)
+
+    st.divider()
+
+    col_summary1, col_summary2 = st.columns([1, 1])
+    with col_summary1:
+        st.subheader("📈 调用状态分布")
+        status_counts = {}
+        for t in filtered_traces:
+            status_counts[t["status"]] = status_counts.get(t["status"], 0) + 1
+        if status_counts:
+            fig_pie = px.pie(
+                values=list(status_counts.values()),
+                names=list(status_counts.keys()),
+                color=list(status_counts.keys()),
+                color_discrete_map={
+                    "成功": "#10B981",
+                    "超时": "#F59E0B",
+                    "失败": "#EF4444"
+                },
+                hole=0.4,
+                title="调用状态占比"
+            )
+            fig_pie.update_layout(height=320)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("暂无调用数据")
+
+    with col_summary2:
+        st.subheader("⚠️ 错误类型分布")
+        err_data = global_summary.get("error_types", {})
+        if err_data:
+            err_df = pd.DataFrame([
+                {"错误类型": k, "数量": v} for k, v in sorted(err_data.items(), key=lambda x: -x[1])
+            ])
+            fig_err = px.bar(
+                err_df,
+                x="数量",
+                y="错误类型",
+                orientation="h",
+                title="各错误类型发生次数",
+                color="错误类型",
+                color_discrete_map={
+                    et: get_error_type_color(et) for et in ERROR_TYPE_OPTIONS
+                }
+            )
+            fig_err.update_layout(height=320, showlegend=False)
+            st.plotly_chart(fig_err, use_container_width=True)
+        else:
+            st.info("暂无错误数据")
+
+    st.divider()
+
+    col_trace_header1, col_trace_header2, col_trace_header3 = st.columns([3, 1, 1])
+    with col_trace_header1:
+        if selected_node_id:
+            node_info = get_node_by_id(dep_data, selected_node_id)
+            svc_name = node_info["name"] if node_info else selected_node_id
+            dir_label = {"both": "全部", "inbound": "入站", "outbound": "出站"}[direction]
+            st.subheader(f"🔗 服务「{svc_name}」的{dir_label}调用链路 ({len(filtered_traces)} 条)")
+        else:
+            st.subheader(f"🔗 实时调用链路追踪 ({len(filtered_traces)} 条)")
+    with col_trace_header2:
+        st.caption(f"💾 数据文件：{CALL_TRACES_JSON}")
+    with col_trace_header3:
+        if st.button("🔄 刷新", use_container_width=True, key="trace_refresh_btn"):
+            all_traces = refresh_call_traces()
+            st.rerun()
+
+    col_trace_list, col_trace_detail = st.columns([3, 2])
+
+    with col_trace_list:
+        if not filtered_traces:
+            st.info("📭 暂无符合筛选条件的调用记录")
+        else:
+            display_traces = filtered_traces[:100]
+            for idx, trace in enumerate(display_traces):
+                status_color = get_trace_status_color(trace["status"])
+                is_selected = st.session_state.get("trace_selected_detail") == trace["trace_id"]
+
+                border_style = "3px solid #3B82F6" if is_selected else f"1px solid #E5E7EB"
+                bg_style = "#EFF6FF" if is_selected else "white"
+
+                arrow_dir = "→"
+                if selected_node_id:
+                    if trace["target_service_id"] == selected_node_id:
+                        arrow_dir = "↙"
+                    elif trace["source_service_id"] == selected_node_id:
+                        arrow_dir = "↗"
+
+                with st.container():
+                    card_cols = st.columns([12, 1])
+                    with card_cols[0]:
+                        st.markdown(f"""
+                        <div style="padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; background-color: {bg_style}; border: {border_style}; cursor: pointer;">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+                                <div style="font-weight: 600; font-size: 14px;">
+                                    <span style="color: #6B7280; font-weight: 400; font-size: 12px;">{arrow_dir}</span>
+                                    &nbsp;{trace['source_service_name']}
+                                    &nbsp;<span style="color: #9CA3AF;">→</span>&nbsp;
+                                    <span style="color: #1F2937;">{trace['target_service_name']}</span>
+                                    <span style="margin-left: 8px; padding: 1px 8px; border-radius: 10px; background-color: #F3F4F6; color: #374151; font-size: 11px; font-weight: 500;">
+                                        {trace['method']}
+                                    </span>
+                                </div>
+                                <span style="padding: 2px 10px; border-radius: 10px; background-color: {status_color}; color: white; font-size: 11px; font-weight: 600;">
+                                    {trace['status']}
+                                </span>
+                            </div>
+                            <div style="font-size: 12px; color: #6B7280; margin-bottom: 4px;">
+                                {trace['endpoint']}
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
+                                <span style="color: #9CA3AF;">🕒 {trace['timestamp']}</span>
+                                <span>
+                                    <strong style="color: #1F2937;">{trace['response_time_ms']:.0f} ms</strong>
+                                    &nbsp;·&nbsp;
+                                    <span style="color: #6B7280;">HTTP {trace['http_status_code']}</span>
+                                    {f"&nbsp;·&nbsp;<span style='color: #EF4444;'>{trace['error_type']}</span>" if trace['error_type'] != '无' else ''}
+                                </span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with card_cols[1]:
+                        if st.button("查看", key=f"view_trace_{idx}", use_container_width=True, type="primary" if is_selected else "secondary"):
+                            st.session_state["trace_selected_detail"] = trace["trace_id"]
+                            st.rerun()
+
+            if len(filtered_traces) > 100:
+                st.caption(f"📋 仅显示前 100 条记录，共 {len(filtered_traces)} 条。请调整筛选条件缩小范围。")
+
+    with col_trace_detail:
+        st.subheader("📋 调用详情")
+        selected_trace_id = st.session_state.get("trace_selected_detail")
+        selected_trace = next((t for t in all_traces if t["trace_id"] == selected_trace_id), None) if selected_trace_id else None
+
+        if selected_trace:
+            status_color = get_trace_status_color(selected_trace["status"])
+
+            has_chain = len(build_trace_chain(all_traces, selected_trace["trace_id"])) > 1
+
+            detail_tabs = st.tabs(["📊 概览", "🔗 调用链路", "🏷️ 标签信息"])
+
+            with detail_tabs[0]:
+                st.markdown(f"""
+                <div style="padding: 16px; background: linear-gradient(135deg, {status_color}22, {status_color}11); border-radius: 10px; margin-bottom: 16px;">
+                    <div style="font-size: 16px; font-weight: 700; margin-bottom: 4px;">
+                        {selected_trace['source_service_name']}
+                        <span style="color: #9CA3AF; margin: 0 8px;">→</span>
+                        {selected_trace['target_service_name']}
+                    </div>
+                    <div style="font-size: 12px; color: #6B7280; font-family: monospace;">
+                        Trace ID: {selected_trace['trace_id']}
+                    </div>
+                    {f"<div style='font-size: 12px; color: #6B7280; font-family: monospace; margin-top: 2px;'>Span ID: {selected_trace.get('span_id', 'N/A')}</div>" if selected_trace.get('span_id') else ''}
+                </div>
+                """, unsafe_allow_html=True)
+
+                col_td1, col_td2, col_td3, col_td4 = st.columns(4)
+                with col_td1:
+                    st.metric("响应时间", f"{selected_trace['response_time_ms']:.0f} ms")
+                with col_td2:
+                    st.metric("HTTP 状态码", selected_trace["http_status_code"])
+                with col_td3:
+                    status_badge_color = "#10B981" if selected_trace["status"] == "成功" else ("#F59E0B" if selected_trace["status"] == "超时" else "#EF4444")
+                    st.metric("调用状态", selected_trace["status"], delta_color="normal")
+                with col_td4:
+                    depth = selected_trace.get("depth", 0)
+                    st.metric("调用深度", f"L{depth}")
+
+                st.markdown("**📝 基本信息**")
+                basic_info_data = {
+                    "调用时间": selected_trace["timestamp"],
+                    "请求方法": selected_trace["method"],
+                    "请求端点": selected_trace["endpoint"],
+                    "源服务": f"{selected_trace['source_service_name']} ({selected_trace['source_service_type']})",
+                    "目标服务": f"{selected_trace['target_service_name']} ({selected_trace['target_service_type']})",
+                    "调用描述": selected_trace.get("description", "N/A"),
+                }
+                if selected_trace.get("parent_span_id"):
+                    basic_info_data["父Span ID"] = selected_trace["parent_span_id"]
+                basic_info = pd.DataFrame([basic_info_data]).T
+                basic_info.columns = ["值"]
+                st.dataframe(basic_info, use_container_width=True, header=True, height=260)
+
+                st.markdown("**📦 数据传输大小**")
+                size_df = pd.DataFrame([{
+                    "请求大小": f"{selected_trace['request_size_bytes']:,} 字节 ({round(selected_trace['request_size_bytes']/1024, 2)} KB)",
+                    "响应大小": f"{selected_trace['response_size_bytes']:,} 字节 ({round(selected_trace['response_size_bytes']/1024, 2)} KB)",
+                }]).T
+                size_df.columns = ["值"]
+                st.dataframe(size_df, use_container_width=True, header=True)
+
+                if selected_trace["error_type"] != "无":
+                    st.markdown("**❌ 错误信息**")
+                    err_color = get_error_type_color(selected_trace["error_type"])
+                    st.markdown(f"""
+                    <div style="padding: 12px; background-color: #FEF2F2; border-left: 4px solid {err_color}; border-radius: 4px;">
+                        <div style="font-weight: 600; color: #991B1B; margin-bottom: 4px;">
+                            错误类型：{selected_trace['error_type']}
+                        </div>
+                        <div style="font-size: 13px; color: #7F1D1D; font-family: monospace; white-space: pre-wrap;">
+                            {selected_trace['error_message']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            with detail_tabs[1]:
+                if has_chain:
+                    timeline_fig = render_trace_timeline(all_traces, selected_trace["trace_id"])
+                    if timeline_fig:
+                        st.plotly_chart(timeline_fig, use_container_width=True, key=f"timeline_{selected_trace_id}")
+
+                    waterfall_fig = render_trace_waterfall(all_traces, selected_trace["trace_id"])
+                    if waterfall_fig:
+                        st.plotly_chart(waterfall_fig, use_container_width=True, key=f"waterfall_{selected_trace_id}")
+
+                    st.divider()
+                    st.subheader("🔗 调用链路节点")
+                    trace_chain = build_trace_chain(all_traces, selected_trace["trace_id"])
+
+                    trace_tree = build_trace_tree(all_traces, selected_trace["trace_id"])
+                    flat_spans = get_trace_tree_flat(trace_tree)
+                    if not flat_spans:
+                        flat_spans = sorted(trace_chain, key=lambda x: x.get("start_time_ms", 0))
+                        for s in flat_spans:
+                            s["_level"] = s.get("depth", 0)
+
+                    for ci, ct in enumerate(flat_spans):
+                        c_status_color = get_trace_status_color(ct.get("status", "成功"))
+                        is_current = ct.get("trace_id") == selected_trace["trace_id"] and ct.get("span_id", "") == selected_trace.get("span_id", "")
+                        if not is_current and ct.get("trace_id") == selected_trace["trace_id"] and not selected_trace.get("span_id"):
+                            is_current = ci == 0
+                        connector = "↓" if ci < len(flat_spans) - 1 else ""
+                        indent = "　" * ct.get("_level", 0)
+                        st.markdown(f"""
+                        <div style="display: flex; margin-bottom: 4px;">
+                            <div style="display: flex; flex-direction: column; align-items: center; margin-right: 12px;">
+                                <div style="width: 12px; height: 12px; border-radius: 50%; background-color: {c_status_color}; border: 2px solid {'#3B82F6' if is_current else 'white'};"></div>
+                                {f"<div style='width: 2px; flex: 1; min-height: 20px; background-color: #E5E7EB;'></div>" if connector else ''}
+                            </div>
+                            <div style="flex: 1; padding: 8px 12px; background-color: {'#EFF6FF' if is_current else '#F9FAFB'}; border-radius: 6px; margin-bottom: 2px;">
+                                <div style="font-size: 12px; font-weight: 600;">
+                                    {indent}{ct.get('source_service_name', 'N/A')} → {ct.get('target_service_name', 'N/A')}
+                                    <span style="margin-left: 6px; padding: 1px 6px; border-radius: 8px; background-color: {c_status_color}; color: white; font-size: 10px;">
+                                        {ct.get('status', '')}
+                                    </span>
+                                    {f"<span style='margin-left: 4px; padding: 1px 6px; border-radius: 8px; background-color: #3B82F6; color: white; font-size: 10px;'>L{ct.get('_level', 0)}</span>"}
+                                </div>
+                                <div style="font-size: 11px; color: #6B7280;">
+                                    {ct.get('method', '')} {ct.get('endpoint', '')} · {ct.get('response_time_ms', 0):.0f}ms · {ct.get('timestamp', '')}
+                                </div>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.info("📭 该调用没有关联的上下游调用链，这是一个独立的调用记录。")
+                    st.caption("💡 提示：刷新链路数据以生成包含完整调用链的记录")
+
+            with detail_tabs[2]:
+                tags = selected_trace.get("tags", {})
+                if tags:
+                    st.markdown("**🏷️ 调用标签 (Tags)**")
+                    tag_items = [(k, v) for k, v in tags.items() if v]
+                    if tag_items:
+                        tags_df = pd.DataFrame(tag_items, columns=["标签名", "标签值"])
+                        st.dataframe(
+                            tags_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(400, 40 + len(tag_items) * 35)
+                        )
+                    else:
+                        st.caption("暂无有效的标签数据")
+                else:
+                    st.caption("该调用记录没有标签信息")
+
+                chain_summary = compute_trace_summary(build_trace_chain(all_traces, selected_trace["trace_id"]))
+                st.divider()
+                st.markdown("**📊 调用链统计**")
+                cs_col1, cs_col2, cs_col3 = st.columns(3)
+                with cs_col1:
+                    st.metric("链路总节点数", chain_summary["total_count"])
+                with cs_col2:
+                    st.metric("链路成功率", f"{chain_summary['success_rate']}%")
+                with cs_col3:
+                    st.metric("链路总耗时", f"{chain_summary['max_response_time']:.0f}ms")
+        else:
+            st.info("👈 请从左侧调用列表中选择一条调用记录查看详情")
 
     st.divider()
     col_footer1, col_footer2 = st.columns(2)
     with col_footer1:
-        st.caption(f"💾 依赖关系配置文件：{DEPENDENCIES_JSON}")
+        st.caption(f"💾 依赖关系配置：{DEPENDENCIES_JSON} | 调用链路数据：{CALL_TRACES_JSON}")
     with col_footer2:
         st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -4750,6 +5991,9 @@ def main():
     if "last_upgrade_check" not in st.session_state:
         st.session_state["last_upgrade_check"] = None
 
+    if "trace_last_refresh" not in st.session_state:
+        st.session_state["trace_last_refresh"] = None
+
     now = datetime.now()
     should_check = True
     if st.session_state["last_upgrade_check"]:
@@ -4760,6 +6004,19 @@ def main():
     if should_check:
         run_background_upgrade_check()
         st.session_state["last_upgrade_check"] = now
+
+    if st.session_state.get("trace_auto_refresh", False):
+        should_refresh_traces = True
+        if st.session_state["trace_last_refresh"]:
+            trace_elapsed = (now - st.session_state["trace_last_refresh"]).total_seconds()
+            if trace_elapsed < 30:
+                should_refresh_traces = False
+        if should_refresh_traces:
+            try:
+                refresh_call_traces()
+                st.session_state["trace_last_refresh"] = now
+            except Exception:
+                pass
 
     st.markdown(
         """
