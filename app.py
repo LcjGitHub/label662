@@ -3,8 +3,9 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import os
+import csv
 
-# 页面配置
 st.set_page_config(
     page_title="服务响应时效监控",
     page_icon="⚡",
@@ -12,7 +13,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 自定义 CSS 样式
 st.markdown("""
 <style>
     .metric-card {
@@ -27,13 +27,160 @@ st.markdown("""
         padding: 15px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
+    .alert-metric-normal {
+        border-left: 4px solid #10B981;
+    }
+    .alert-metric-warning {
+        border-left: 4px solid #F59E0B;
+    }
+    .alert-metric-critical {
+        border-left: 4px solid #EF4444;
+    }
+    .clickable-metric {
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .clickable-metric:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# 生成 mock 数据
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+ALERTS_CSV = os.path.join(DATA_DIR, "alerts.csv")
+THRESHOLDS_CSV = os.path.join(DATA_DIR, "thresholds.csv")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+ALERT_COLUMNS = [
+    "alert_id", "service_name", "service_type", "alert_level",
+    "alert_time", "response_time", "warning_threshold",
+    "critical_threshold", "status", "resolved_time"
+]
+
+THRESHOLD_COLUMNS = ["service_type", "warning_threshold", "critical_threshold"]
+
+DEFAULT_THRESHOLDS = {
+    "网关服务": {"warning_threshold": 200, "critical_threshold": 500},
+    "认证服务": {"warning_threshold": 150, "critical_threshold": 300},
+    "数据库": {"warning_threshold": 100, "critical_threshold": 300},
+    "缓存服务": {"warning_threshold": 20, "critical_threshold": 50},
+    "存储服务": {"warning_threshold": 300, "critical_threshold": 800},
+    "消息服务": {"warning_threshold": 100, "critical_threshold": 300},
+    "搜索服务": {"warning_threshold": 300, "critical_threshold": 600},
+    "支付服务": {"warning_threshold": 500, "critical_threshold": 1000},
+    "通知服务": {"warning_threshold": 400, "critical_threshold": 800},
+    "网络服务": {"warning_threshold": 50, "critical_threshold": 150},
+    "监控服务": {"warning_threshold": 200, "critical_threshold": 500},
+    "AI 服务": {"warning_threshold": 1000, "critical_threshold": 2000},
+}
+
+
+def init_csv_files():
+    if not os.path.exists(ALERTS_CSV):
+        with open(ALERTS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=ALERT_COLUMNS)
+            writer.writeheader()
+
+    if not os.path.exists(THRESHOLDS_CSV):
+        with open(THRESHOLDS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=THRESHOLD_COLUMNS)
+            writer.writeheader()
+            for stype, thresholds in DEFAULT_THRESHOLDS.items():
+                writer.writerow({
+                    "service_type": stype,
+                    "warning_threshold": thresholds["warning_threshold"],
+                    "critical_threshold": thresholds["critical_threshold"]
+                })
+
+
+init_csv_files()
+
+
+def load_thresholds():
+    if os.path.exists(THRESHOLDS_CSV):
+        df = pd.read_csv(THRESHOLDS_CSV, encoding="utf-8-sig")
+        thresholds = {}
+        for _, row in df.iterrows():
+            thresholds[row["service_type"]] = {
+                "warning_threshold": float(row["warning_threshold"]),
+                "critical_threshold": float(row["critical_threshold"])
+            }
+        return thresholds
+    return DEFAULT_THRESHOLDS.copy()
+
+
+def save_thresholds(thresholds):
+    with open(THRESHOLDS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=THRESHOLD_COLUMNS)
+        writer.writeheader()
+        for stype, th in thresholds.items():
+            writer.writerow({
+                "service_type": stype,
+                "warning_threshold": th["warning_threshold"],
+                "critical_threshold": th["critical_threshold"]
+            })
+
+
+def load_alerts():
+    if os.path.exists(ALERTS_CSV):
+        dtype_map = {
+            "alert_id": str, "service_name": str, "service_type": str,
+            "alert_level": str, "alert_time": str, "response_time": float,
+            "warning_threshold": float, "critical_threshold": float,
+            "status": str, "resolved_time": str
+        }
+        df = pd.read_csv(ALERTS_CSV, encoding="utf-8-sig", dtype=dtype_map, keep_default_na=False)
+        if df.empty:
+            return pd.DataFrame(columns=ALERT_COLUMNS)
+        return df
+    return pd.DataFrame(columns=ALERT_COLUMNS)
+
+
+def save_alert(alert_data):
+    file_exists = os.path.exists(ALERTS_CSV)
+    with open(ALERTS_CSV, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=ALERT_COLUMNS)
+        if not file_exists or os.path.getsize(ALERTS_CSV) == 0:
+            writer.writeheader()
+        writer.writerow(alert_data)
+
+
+def update_alert_status(alert_id, status):
+    df = load_alerts()
+    if not df.empty and alert_id in df["alert_id"].values:
+        df.loc[df["alert_id"] == alert_id, "status"] = status
+        if status == "已处理":
+            df.loc[df["alert_id"] == alert_id, "resolved_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
+
+
+def batch_resolve_alerts(alert_ids):
+    df = load_alerts()
+    if not df.empty:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        mask = df["alert_id"].isin(alert_ids)
+        df.loc[mask, "status"] = "已处理"
+        df.loc[mask, "resolved_time"] = now_str
+        df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
+
+
+def generate_alert_id():
+    return f"ALT{datetime.now().strftime('%Y%m%d%H%M%S')}{np.random.randint(1000, 9999)}"
+
+
+def get_service_status(response_time, warning_threshold, critical_threshold):
+    if response_time >= critical_threshold:
+        return "异常"
+    elif response_time >= warning_threshold:
+        return "警告"
+    else:
+        return "正常"
+
+
 @st.cache_data
 def generate_mock_data():
-    """生成服务响应时间的 mock 数据"""
     services = [
         {"service_name": "API 网关", "service_type": "网关服务", "avg_response_time": 120, "request_count": 15000},
         {"service_name": "用户认证服务", "service_type": "认证服务", "avg_response_time": 85, "request_count": 8500},
@@ -51,225 +198,51 @@ def generate_mock_data():
         {"service_name": "日志收集服务", "service_type": "监控服务", "avg_response_time": 95, "request_count": 22000},
         {"service_name": "图像识别服务", "service_type": "AI 服务", "avg_response_time": 850, "request_count": 1200},
     ]
-    
-    # 添加状态字段
-    for service in services:
-        if service["avg_response_time"] < 100:
-            service["status"] = "正常"
-        elif service["avg_response_time"] < 500:
-            service["status"] = "警告"
-        else:
-            service["status"] = "异常"
-    
     return pd.DataFrame(services)
 
-# 加载数据
-df = generate_mock_data()
 
-# 侧边栏
-with st.sidebar:
-    st.header("🔧 过滤器")
-    
-    # 服务类型筛选
-    service_types = ["全部"] + sorted(df["service_type"].unique().tolist())
-    selected_type = st.selectbox(
-        "选择服务类型",
-        service_types,
-        help="筛选特定类型的服务进行查看"
-    )
-    
-    # 状态筛选
-    status_options = ["全部", "正常", "警告", "异常"]
-    selected_status = st.radio(
-        "服务状态",
-        status_options,
-        help="根据响应时间自动判断的服务状态"
-    )
-    
-    # 排序选项
-    sort_option = st.selectbox(
-        "排序方式",
-        ["响应时间升序", "响应时间降序", "请求量降序"],
-        help="选择图表和表格的排序方式"
-    )
-    
-    st.divider()
-    
-    # 显示数据更新时间
-    st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    st.caption("💡 提示：数据为 Mock 数据")
+def detect_and_record_alerts(services_df, thresholds):
+    alerts_df = load_alerts()
+    active_alerts = set()
+    if not alerts_df.empty:
+        active = alerts_df[alerts_df["status"] == "未处理"]
+        for _, row in active.iterrows():
+            active_alerts.add(f"{row['service_name']}_{row['alert_level']}")
 
-# 主标题
-st.title("⚡ 服务响应时效监控")
-st.markdown("实时监控各服务类型的平均响应时间，快速识别性能瓶颈")
-st.divider()
+    new_alerts = []
+    for _, service in services_df.iterrows():
+        stype = service["service_type"]
+        sname = service["service_name"]
+        rt = service["avg_response_time"]
 
-# 数据筛选
-filtered_df = df.copy()
+        th = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+        warning_th = th["warning_threshold"]
+        critical_th = th["critical_threshold"]
+        status = get_service_status(rt, warning_th, critical_th)
 
-if selected_type != "全部":
-    filtered_df = filtered_df[filtered_df["service_type"] == selected_type]
+        if status in ["警告", "异常"]:
+            alert_level = "警告" if status == "警告" else "异常"
+            alert_key = f"{sname}_{alert_level}"
 
-if selected_status != "全部":
-    filtered_df = filtered_df[filtered_df["status"] == selected_status]
+            if alert_key not in active_alerts:
+                alert_data = {
+                    "alert_id": generate_alert_id(),
+                    "service_name": sname,
+                    "service_type": stype,
+                    "alert_level": alert_level,
+                    "alert_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "response_time": rt,
+                    "warning_threshold": warning_th,
+                    "critical_threshold": critical_th,
+                    "status": "未处理",
+                    "resolved_time": ""
+                }
+                new_alerts.append(alert_data)
+                save_alert(alert_data)
 
-# 数据排序
-if sort_option == "响应时间升序":
-    filtered_df = filtered_df.sort_values("avg_response_time", ascending=True)
-elif sort_option == "响应时间降序":
-    filtered_df = filtered_df.sort_values("avg_response_time", ascending=False)
-elif sort_option == "请求量降序":
-    filtered_df = filtered_df.sort_values("request_count", ascending=False)
+    return new_alerts
 
-# 统计指标
-col1, col2, col3, col4 = st.columns(4)
 
-with col1:
-    st.metric(
-        label="📦 总服务数",
-        value=len(filtered_df),
-        help="当前筛选条件下的服务总数"
-    )
-
-with col2:
-    avg_time = filtered_df["avg_response_time"].mean()
-    st.metric(
-        label="⏱️ 平均响应时间",
-        value=f"{avg_time:.1f} ms",
-        help="所有服务的平均响应时间"
-    )
-
-with col3:
-    if len(filtered_df) > 0:
-        fastest = filtered_df.loc[filtered_df["avg_response_time"].idxmin()]
-        st.metric(
-            label="🚀 最快服务",
-            value=fastest["service_name"],
-            delta=f"{fastest['avg_response_time']} ms"
-        )
-    else:
-        st.metric(label="🚀 最快服务", value="N/A")
-
-with col4:
-    if len(filtered_df) > 0:
-        slowest = filtered_df.loc[filtered_df["avg_response_time"].idxmax()]
-        st.metric(
-            label="🐢 最慢服务",
-            value=slowest["service_name"],
-            delta=f"-{slowest['avg_response_time']} ms",
-            delta_color="inverse"
-        )
-    else:
-        st.metric(label="🐢 最慢服务", value="N/A")
-
-st.divider()
-
-# 创建图表
-col_chart1, col_chart2 = st.columns([3, 1])
-
-with col_chart1:
-    st.subheader("📊 服务响应时间条形图")
-    
-    # 创建颜色映射 - 根据响应时间
-    filtered_df["color"] = filtered_df["avg_response_time"].apply(
-        lambda x: "正常" if x < 100 else ("警告" if x < 500 else "异常")
-    )
-    
-    # 创建 Plotly 条形图
-    fig = px.bar(
-        filtered_df,
-        x="avg_response_time",
-        y="service_name",
-        orientation="h",
-        color="avg_response_time",
-        color_continuous_scale=["#10B981", "#F59E0B", "#EF4444"],
-        text="avg_response_time",
-        title="各服务平均响应时间对比 (单位：ms)",
-        hover_data={
-            "service_type": True,
-            "request_count": True,
-            "status": True,
-            "avg_response_time": ":.1f"
-        }
-    )
-    
-    # 更新图表布局
-    fig.update_layout(
-        xaxis_title="响应时间 (ms)",
-        yaxis_title="服务名称",
-        showlegend=False,
-        height=500,
-        xaxis=dict(
-            showgrid=True,
-            gridstyle="dash",
-            gridcolor="rgba(0,0,0,0.1)"
-        ),
-        yaxis=dict(
-            showgrid=False,
-            categoryorder="total ascending" if sort_option == "响应时间升序" else "total descending"
-        )
-    )
-    
-    # 更新文本标签
-    fig.update_traces(
-        texttemplate="%{text:.0f} ms",
-        textposition="outside",
-        hovertemplate="<b>%{y}</b><br>" +
-                     "响应时间：%{x:.0f} ms<br>" +
-                     "服务类型：%{customdata[0]}<br>" +
-                     "请求量：%{customdata[1]:,}<br>" +
-                     "状态：%{customdata[2]}<extra></extra>"
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-with col_chart2:
-    st.subheader("📈 状态分布")
-    
-    # 状态统计
-    status_count = filtered_df["status"].value_counts()
-    
-    # 创建状态分布饼图
-    if len(status_count) > 0:
-        fig_pie = px.pie(
-            values=status_count.values,
-            names=status_count.index,
-            color=status_count.index,
-            color_discrete_map={
-                "正常": "#10B981",
-                "警告": "#F59E0B",
-                "异常": "#EF4444"
-            },
-            hole=0.4
-        )
-        
-        fig_pie.update_layout(
-            height=300,
-            showlegend=True,
-            legend=dict(orientation="v", yanchor="middle", y=0.5)
-        )
-        
-        st.plotly_chart(fig_pie, use_container_width=True)
-    
-    # 显示各类型服务数量
-    st.subheader("📋 服务类型分布")
-    if len(filtered_df) > 0:
-        type_count = filtered_df["service_type"].value_counts()
-        st.dataframe(
-            type_count.to_frame(name="服务数量"),
-            use_container_width=True,
-            hide_index=True
-        )
-
-# 详细数据表格
-st.divider()
-st.subheader("📋 详细数据")
-
-# 显示数据表格
-display_df = filtered_df[["service_name", "service_type", "avg_response_time", "request_count", "status"]].copy()
-display_df.columns = ["服务名称", "服务类型", "平均响应时间 (ms)", "请求量", "状态"]
-
-# 添加颜色标记
 def color_status(val):
     if val == "正常":
         return "background-color: #D1FAE5; color: #065F46"
@@ -277,20 +250,555 @@ def color_status(val):
         return "background-color: #FEF3C7; color: #92400E"
     elif val == "异常":
         return "background-color: #FEE2E2; color: #991B1B"
+    elif val == "已处理":
+        return "background-color: #DBEAFE; color: #1E40AF"
+    elif val == "未处理":
+        return "background-color: #FEE2E2; color: #991B1B"
     return ""
 
-st.dataframe(
-    display_df.style.applymap(color_status, subset=["状态"]),
-    use_container_width=True,
-    hide_index=True
-)
 
-# 底部信息
-st.divider()
-col_footer1, col_footer2 = st.columns(2)
+def get_unresolved_alert_count():
+    alerts_df = load_alerts()
+    if alerts_df.empty:
+        return 0
+    return len(alerts_df[alerts_df["status"] == "未处理"])
 
-with col_footer1:
-    st.caption("💡 使用说明：数据仅供参考，实际生产环境请接入真实监控数据")
 
-with col_footer2:
-    st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+def render_dashboard_page():
+    df = generate_mock_data()
+    thresholds = load_thresholds()
+
+    detect_and_record_alerts(df, thresholds)
+
+    df_with_status = df.copy()
+    for idx, row in df_with_status.iterrows():
+        stype = row["service_type"]
+        th = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+        df_with_status.at[idx, "status"] = get_service_status(
+            row["avg_response_time"], th["warning_threshold"], th["critical_threshold"]
+        )
+
+    with st.sidebar:
+        st.header("🔧 过滤器")
+
+        service_types = ["全部"] + sorted(df_with_status["service_type"].unique().tolist())
+        selected_type = st.selectbox(
+            "选择服务类型",
+            service_types,
+            help="筛选特定类型的服务进行查看"
+        )
+
+        status_options = ["全部", "正常", "警告", "异常"]
+        selected_status = st.radio(
+            "服务状态",
+            status_options,
+            help="根据响应时间自动判断的服务状态"
+        )
+
+        sort_option = st.selectbox(
+            "排序方式",
+            ["响应时间升序", "响应时间降序", "请求量降序"],
+            help="选择图表和表格的排序方式"
+        )
+
+        st.divider()
+
+        st.subheader("🔔 告警阈值设置")
+        all_service_types = sorted(df_with_status["service_type"].unique().tolist())
+        for stype in all_service_types:
+            current = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+            with st.expander(f"⚙️ {stype}", expanded=False):
+                col_w, col_c = st.columns(2)
+                with col_w:
+                    new_warning = st.number_input(
+                        "警告阈值 (ms)",
+                        min_value=1,
+                        max_value=10000,
+                        value=int(current["warning_threshold"]),
+                        key=f"warn_{stype}"
+                    )
+                with col_c:
+                    new_critical = st.number_input(
+                        "异常阈值 (ms)",
+                        min_value=1,
+                        max_value=10000,
+                        value=int(current["critical_threshold"]),
+                        key=f"crit_{stype}"
+                    )
+                if new_warning >= new_critical:
+                    st.warning("⚠️ 警告阈值应小于异常阈值")
+                thresholds[stype] = {
+                    "warning_threshold": new_warning,
+                    "critical_threshold": new_critical
+                }
+
+        if st.button("💾 保存阈值设置", use_container_width=True, type="primary"):
+            save_thresholds(thresholds)
+            st.success("✅ 阈值设置已保存！")
+            st.cache_data.clear()
+            st.rerun()
+
+        st.divider()
+        st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption("💡 提示：数据为 Mock 数据")
+
+    st.title("⚡ 服务响应时效监控")
+    st.markdown("实时监控各服务类型的平均响应时间，快速识别性能瓶颈")
+    st.divider()
+
+    filtered_df = df_with_status.copy()
+
+    if selected_type != "全部":
+        filtered_df = filtered_df[filtered_df["service_type"] == selected_type]
+
+    if selected_status != "全部":
+        filtered_df = filtered_df[filtered_df["status"] == selected_status]
+
+    if sort_option == "响应时间升序":
+        filtered_df = filtered_df.sort_values("avg_response_time", ascending=True)
+    elif sort_option == "响应时间降序":
+        filtered_df = filtered_df.sort_values("avg_response_time", ascending=False)
+    elif sort_option == "请求量降序":
+        filtered_df = filtered_df.sort_values("request_count", ascending=False)
+
+    unresolved_count = get_unresolved_alert_count()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.metric(
+            label="📦 总服务数",
+            value=len(filtered_df),
+            help="当前筛选条件下的服务总数"
+        )
+
+    with col2:
+        avg_time = filtered_df["avg_response_time"].mean() if len(filtered_df) > 0 else 0
+        st.metric(
+            label="⏱️ 平均响应时间",
+            value=f"{avg_time:.1f} ms",
+            help="所有服务的平均响应时间"
+        )
+
+    with col3:
+        if len(filtered_df) > 0:
+            fastest = filtered_df.loc[filtered_df["avg_response_time"].idxmin()]
+            st.metric(
+                label="🚀 最快服务",
+                value=fastest["service_name"],
+                delta=f"{fastest['avg_response_time']} ms"
+            )
+        else:
+            st.metric(label="🚀 最快服务", value="N/A")
+
+    with col4:
+        if len(filtered_df) > 0:
+            slowest = filtered_df.loc[filtered_df["avg_response_time"].idxmax()]
+            st.metric(
+                label="🐢 最慢服务",
+                value=slowest["service_name"],
+                delta=f"-{slowest['avg_response_time']} ms",
+                delta_color="inverse"
+            )
+        else:
+            st.metric(label="🐢 最慢服务", value="N/A")
+
+    with col5:
+        alert_label = "🔔 未处理告警"
+        if unresolved_count > 0:
+            alert_label = f"🚨 未处理告警"
+        alert_metric = st.metric(
+            label=alert_label,
+            value=f"{unresolved_count} 条",
+            help="点击下方按钮查看告警详情"
+        )
+        if st.button("📋 查看告警历史", use_container_width=True, type="secondary" if unresolved_count == 0 else "primary"):
+            st.session_state["page"] = "alerts"
+            st.rerun()
+
+    st.divider()
+
+    col_chart1, col_chart2 = st.columns([3, 1])
+
+    with col_chart1:
+        st.subheader("📊 服务响应时间条形图")
+
+        filtered_df["color"] = filtered_df["avg_response_time"].apply(
+            lambda x: "正常" if x < 100 else ("警告" if x < 500 else "异常")
+        )
+
+        fig = px.bar(
+            filtered_df,
+            x="avg_response_time",
+            y="service_name",
+            orientation="h",
+            color="avg_response_time",
+            color_continuous_scale=["#10B981", "#F59E0B", "#EF4444"],
+            text="avg_response_time",
+            title="各服务平均响应时间对比 (单位：ms)",
+            hover_data={
+                "service_type": True,
+                "request_count": True,
+                "status": True,
+                "avg_response_time": ":.1f"
+            }
+        )
+
+        fig.update_layout(
+            xaxis_title="响应时间 (ms)",
+            yaxis_title="服务名称",
+            showlegend=False,
+            height=500,
+            xaxis=dict(
+                showgrid=True,
+                gridstyle="dash",
+                gridcolor="rgba(0,0,0,0.1)"
+            ),
+            yaxis=dict(
+                showgrid=False,
+                categoryorder="total ascending" if sort_option == "响应时间升序" else "total descending"
+            )
+        )
+
+        fig.update_traces(
+            texttemplate="%{text:.0f} ms",
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>" +
+                         "响应时间：%{x:.0f} ms<br>" +
+                         "服务类型：%{customdata[0]}<br>" +
+                         "请求量：%{customdata[1]:,}<br>" +
+                         "状态：%{customdata[2]}<extra></extra>"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_chart2:
+        st.subheader("📈 状态分布")
+
+        status_count = filtered_df["status"].value_counts()
+
+        if len(status_count) > 0:
+            fig_pie = px.pie(
+                values=status_count.values,
+                names=status_count.index,
+                color=status_count.index,
+                color_discrete_map={
+                    "正常": "#10B981",
+                    "警告": "#F59E0B",
+                    "异常": "#EF4444"
+                },
+                hole=0.4
+            )
+
+            fig_pie.update_layout(
+                height=300,
+                showlegend=True,
+                legend=dict(orientation="v", yanchor="middle", y=0.5)
+            )
+
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.subheader("📋 服务类型分布")
+        if len(filtered_df) > 0:
+            type_count = filtered_df["service_type"].value_counts()
+            st.dataframe(
+                type_count.to_frame(name="服务数量"),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    st.divider()
+    st.subheader("📋 详细数据")
+
+    display_df = filtered_df[["service_name", "service_type", "avg_response_time", "request_count", "status"]].copy()
+    display_df.columns = ["服务名称", "服务类型", "平均响应时间 (ms)", "请求量", "状态"]
+
+    st.dataframe(
+        display_df.style.applymap(color_status, subset=["状态"]),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.divider()
+    col_footer1, col_footer2 = st.columns(2)
+
+    with col_footer1:
+        st.caption("💡 使用说明：数据仅供参考，实际生产环境请接入真实监控数据")
+
+    with col_footer2:
+        st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def render_alerts_page():
+    with st.sidebar:
+        st.header("🔔 告警管理")
+
+        if st.button("← 返回监控首页", use_container_width=True):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        st.divider()
+
+        st.subheader("🔍 告警筛选")
+
+        alerts_df_raw = load_alerts()
+
+        all_services = ["全部"]
+        if not alerts_df_raw.empty:
+            all_services += sorted(alerts_df_raw["service_name"].unique().tolist())
+
+        alert_levels = ["全部", "警告", "异常"]
+        alert_statuses = ["全部", "未处理", "已处理"]
+
+        selected_level = st.selectbox(
+            "告警级别",
+            alert_levels,
+            help="按告警级别筛选"
+        )
+
+        selected_alert_status = st.selectbox(
+            "告警状态",
+            alert_statuses,
+            help="按处理状态筛选"
+        )
+
+        selected_service = st.selectbox(
+            "服务名称",
+            all_services,
+            help="按服务名称筛选"
+        )
+
+        st.caption("📅 时间范围")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            start_date = st.date_input(
+                "开始日期",
+                value=datetime.now() - timedelta(days=7),
+                help="告警开始日期"
+            )
+        with col_t2:
+            end_date = st.date_input(
+                "结束日期",
+                value=datetime.now(),
+                help="告警结束日期"
+            )
+
+        st.divider()
+        st.subheader("🔔 告警阈值设置")
+        thresholds = load_thresholds()
+        df = generate_mock_data()
+        all_service_types = sorted(df["service_type"].unique().tolist())
+        for stype in all_service_types:
+            current = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+            with st.expander(f"⚙️ {stype}", expanded=False):
+                col_w, col_c = st.columns(2)
+                with col_w:
+                    new_warning = st.number_input(
+                        "警告阈值 (ms)",
+                        min_value=1,
+                        max_value=10000,
+                        value=int(current["warning_threshold"]),
+                        key=f"alt_warn_{stype}"
+                    )
+                with col_c:
+                    new_critical = st.number_input(
+                        "异常阈值 (ms)",
+                        min_value=1,
+                        max_value=10000,
+                        value=int(current["critical_threshold"]),
+                        key=f"alt_crit_{stype}"
+                    )
+                if new_warning >= new_critical:
+                    st.warning("⚠️ 警告阈值应小于异常阈值")
+                thresholds[stype] = {
+                    "warning_threshold": new_warning,
+                    "critical_threshold": new_critical
+                }
+
+        if st.button("💾 保存阈值设置", use_container_width=True, type="primary", key="save_th_alert"):
+            save_thresholds(thresholds)
+            st.success("✅ 阈值设置已保存！")
+            st.rerun()
+
+        st.divider()
+        st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    st.title("🔔 告警历史记录")
+    st.markdown("查看所有历史告警记录，支持多条件筛选和批量处理")
+    st.divider()
+
+    alerts_df = load_alerts()
+
+    if not alerts_df.empty:
+        alerts_df["alert_time_dt"] = pd.to_datetime(alerts_df["alert_time"])
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        end_dt = datetime.combine(end_date, datetime.max.time())
+        alerts_df = alerts_df[(alerts_df["alert_time_dt"] >= start_dt) & (alerts_df["alert_time_dt"] <= end_dt)]
+
+        if selected_level != "全部":
+            alerts_df = alerts_df[alerts_df["alert_level"] == selected_level]
+
+        if selected_alert_status != "全部":
+            alerts_df = alerts_df[alerts_df["status"] == selected_alert_status]
+
+        if selected_service != "全部":
+            alerts_df = alerts_df[alerts_df["service_name"] == selected_service]
+
+        alerts_df = alerts_df.drop(columns=["alert_time_dt"])
+
+    col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+
+    total_alerts = len(alerts_df) if not alerts_df.empty else 0
+    unresolved = len(alerts_df[alerts_df["status"] == "未处理"]) if not alerts_df.empty else 0
+    warning_count = len(alerts_df[alerts_df["alert_level"] == "警告"]) if not alerts_df.empty else 0
+    critical_count = len(alerts_df[alerts_df["alert_level"] == "异常"]) if not alerts_df.empty else 0
+
+    with col_stats1:
+        st.metric(label="📋 总告警数", value=f"{total_alerts} 条", help="筛选条件下的告警总数")
+
+    with col_stats2:
+        st.metric(label="⏳ 未处理", value=f"{unresolved} 条", delta=f"{unresolved}", delta_color="inverse",
+                  help="尚未处理的告警数量")
+
+    with col_stats3:
+        st.metric(label="⚠️ 警告级别", value=f"{warning_count} 条", help="响应时间超过警告阈值的告警")
+
+    with col_stats4:
+        st.metric(label="🚨 异常级别", value=f"{critical_count} 条", help="响应时间超过异常阈值的告警")
+
+    st.divider()
+
+    col_actions1, col_actions2, col_actions3 = st.columns([2, 1, 1])
+    with col_actions1:
+        st.subheader("📋 告警列表")
+    with col_actions2:
+        if st.button("🔄 刷新数据", use_container_width=True):
+            st.rerun()
+    with col_actions3:
+        unresolved_ids = []
+        if not alerts_df.empty:
+            unresolved_ids = alerts_df[alerts_df["status"] == "未处理"]["alert_id"].tolist()
+        if st.button("✅ 一键处理所有未处理", use_container_width=True, disabled=len(unresolved_ids) == 0,
+                     type="primary"):
+            batch_resolve_alerts(unresolved_ids)
+            st.success(f"✅ 已批量处理 {len(unresolved_ids)} 条告警！")
+            st.rerun()
+
+    if alerts_df.empty:
+        st.info("🎉 暂无告警记录，系统运行正常！")
+    else:
+        display_alerts = alerts_df.copy()
+        display_alerts = display_alerts.sort_values("alert_time", ascending=False)
+
+        for idx, row in display_alerts.iterrows():
+            is_critical = row["alert_level"] == "异常"
+            is_unresolved = row["status"] == "未处理"
+
+            border_color = "#EF4444" if is_critical else "#F59E0B"
+            bg_color = "#FEF2F2" if (is_critical and is_unresolved) else ("#FFFBEB" if is_unresolved else "#F9FAFB")
+
+            with st.container():
+                st.markdown(f"""
+                <div style="
+                    padding: 16px 20px;
+                    border-radius: 8px;
+                    border-left: 4px solid {border_color};
+                    background-color: {bg_color};
+                    margin-bottom: 12px;
+                ">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; margin-bottom: 6px;">
+                                {'🚨' if is_critical else '⚠️'} {row['service_name']}
+                                <span style="
+                                    margin-left: 8px;
+                                    padding: 2px 8px;
+                                    border-radius: 4px;
+                                    font-size: 12px;
+                                    background-color: {'#EF4444' if is_critical else '#F59E0B'};
+                                    color: white;
+                                ">{row['alert_level']}</span>
+                                <span style="
+                                    margin-left: 8px;
+                                    padding: 2px 8px;
+                                    border-radius: 4px;
+                                    font-size: 12px;
+                                    background-color: {'#EF4444' if is_unresolved else '#10B981'};
+                                    color: white;
+                                ">{row['status']}</span>
+                            </div>
+                            <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px;">
+                                <span style="margin-right: 16px;">🏷️ {row['service_type']}</span>
+                                <span style="margin-right: 16px;">⏰ {row['alert_time']}</span>
+                                {'<span>✅ 处理时间：' + str(row['resolved_time']) + '</span>' if pd.notna(row['resolved_time']) and str(row['resolved_time']) != '' else ''}
+                            </div>
+                            <div style="font-size: 14px;">
+                                <span style="margin-right: 20px;">
+                                    响应时间：<strong style="color: {'#EF4444' if is_critical else '#F59E0B'};">{row['response_time']:.0f} ms</strong>
+                                </span>
+                                <span style="margin-right: 20px;">
+                                    警告阈值：<strong>{row['warning_threshold']:.0f} ms</strong>
+                                </span>
+                                <span>
+                                    异常阈值：<strong>{row['critical_threshold']:.0f} ms</strong>
+                                </span>
+                            </div>
+                        </div>
+                """, unsafe_allow_html=True)
+
+                if is_unresolved:
+                    col_btn1, col_btn2 = st.columns([1, 5])
+                    with col_btn1:
+                        if st.button(f"✅ 标记已处理", key=f"resolve_{row['alert_id']}", type="primary"):
+                            update_alert_status(row["alert_id"], "已处理")
+                            st.success("✅ 告警已标记为已处理！")
+                            st.rerun()
+                    with col_btn2:
+                        pass
+
+                st.markdown("</div></div>", unsafe_allow_html=True)
+
+        st.divider()
+        st.subheader("📊 告警数据表格")
+
+        table_df = alerts_df.copy()
+        table_df = table_df.sort_values("alert_time", ascending=False)
+        table_display = table_df[[
+            "alert_id", "service_name", "service_type", "alert_level",
+            "alert_time", "response_time", "warning_threshold",
+            "critical_threshold", "status", "resolved_time"
+        ]].copy()
+        table_display.columns = [
+            "告警ID", "服务名称", "服务类型", "告警级别", "告警时间",
+            "响应时间(ms)", "警告阈值(ms)", "异常阈值(ms)", "状态", "处理时间"
+        ]
+
+        st.dataframe(
+            table_display.style.applymap(color_status, subset=["告警级别", "状态"]),
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+
+    st.divider()
+    col_footer1, col_footer2 = st.columns(2)
+    with col_footer1:
+        st.caption(f"💾 告警数据持久化存储于：{ALERTS_CSV}")
+    with col_footer2:
+        st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def main():
+    if "page" not in st.session_state:
+        st.session_state["page"] = "dashboard"
+
+    if st.session_state["page"] == "dashboard":
+        render_dashboard_page()
+    elif st.session_state["page"] == "alerts":
+        render_alerts_page()
+    else:
+        render_dashboard_page()
+
+
+if __name__ == "__main__":
+    main()
