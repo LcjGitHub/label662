@@ -1,0 +1,12 @@
+{
+  "low_load_threshold": 0.4,
+  "medium_load_threshold": 0.7,
+  "high_load_threshold": 0.85,
+  "critical_load_threshold": 0.95,
+  "rt_degradation_factor": 1.5,
+  "capacity_score_weight_request": 0.6,
+  "capacity_score_weight_rt": 0.4,
+  "target_utilization": 0.7,
+  "min_recommended_instances": 1,
+  "max_recommended_instances": 32
+}

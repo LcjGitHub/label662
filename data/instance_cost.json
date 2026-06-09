@@ -1,0 +1,50 @@
+{
+  "网关服务": {
+    "cost_per_instance_month": 800,
+    "capacity_unit": 50000
+  },
+  "认证服务": {
+    "cost_per_instance_month": 600,
+    "capacity_unit": 30000
+  },
+  "数据库": {
+    "cost_per_instance_month": 2000,
+    "capacity_unit": 20000
+  },
+  "缓存服务": {
+    "cost_per_instance_month": 500,
+    "capacity_unit": 100000
+  },
+  "存储服务": {
+    "cost_per_instance_month": 1200,
+    "capacity_unit": 10000
+  },
+  "消息服务": {
+    "cost_per_instance_month": 900,
+    "capacity_unit": 40000
+  },
+  "搜索服务": {
+    "cost_per_instance_month": 1500,
+    "capacity_unit": 15000
+  },
+  "支付服务": {
+    "cost_per_instance_month": 1800,
+    "capacity_unit": 8000
+  },
+  "通知服务": {
+    "cost_per_instance_month": 700,
+    "capacity_unit": 25000
+  },
+  "网络服务": {
+    "cost_per_instance_month": 1000,
+    "capacity_unit": 80000
+  },
+  "监控服务": {
+    "cost_per_instance_month": 400,
+    "capacity_unit": 35000
+  },
+  "AI 服务": {
+    "cost_per_instance_month": 5000,
+    "capacity_unit": 3000
+  }
+}
