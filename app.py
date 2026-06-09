@@ -359,6 +359,65 @@ def load_alerts():
         for col in ALERT_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
+
+        needs_save = False
+        thresholds = load_thresholds()
+
+        for idx, row in df.iterrows():
+            if row["status"] != "未处理":
+                continue
+
+            alert_level = row.get("alert_level", "警告")
+            stype = row.get("service_type", "")
+            th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+
+            if not row.get("original_level"):
+                df.at[idx, "original_level"] = alert_level
+                needs_save = True
+
+            if not row.get("current_level"):
+                df.at[idx, "current_level"] = alert_level
+                needs_save = True
+
+            if not row.get("upgrade_count"):
+                df.at[idx, "upgrade_count"] = "0"
+                needs_save = True
+
+            if not row.get("current_notify_level"):
+                df.at[idx, "current_notify_level"] = "1"
+                needs_save = True
+
+            if not row.get("notify_person"):
+                if alert_level == "警告":
+                    notify_person = th_config.get("warning_notify_person", "运维工程师")
+                else:
+                    notify_person = th_config.get("critical_notify_person", "技术主管")
+                df.at[idx, "notify_person"] = notify_person
+                needs_save = True
+
+            if not row.get("upgrade_history"):
+                alert_time = row.get("alert_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                notify_person = df.at[idx, "notify_person"]
+                initial_history = json.dumps([{
+                    "level": alert_level,
+                    "time": alert_time,
+                    "notify_person": notify_person,
+                    "action": "告警创建"
+                }], ensure_ascii=False)
+                df.at[idx, "upgrade_history"] = initial_history
+                needs_save = True
+
+            if not row.get("next_upgrade_time"):
+                try:
+                    temp_row = df.iloc[idx].copy()
+                    df.at[idx, "next_upgrade_time"] = compute_next_upgrade_time(temp_row, thresholds)
+                    needs_save = True
+                except Exception:
+                    pass
+
+        if needs_save:
+            df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
+
         return df[ALERT_COLUMNS]
     return pd.DataFrame(columns=ALERT_COLUMNS)
 
@@ -518,12 +577,12 @@ def check_and_upgrade_alerts(thresholds=None):
 def get_remaining_upgrade_time(alert_row):
     next_upgrade_str = alert_row.get("next_upgrade_time", "")
     if not next_upgrade_str:
-        return None, "已达最高升级级别"
+        return None, "⏳ 待计算/未配置"
 
     try:
         next_upgrade_time = datetime.strptime(next_upgrade_str, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return None, "时间格式错误"
+        return None, "⚠️ 时间格式错误"
 
     now = datetime.now()
     remaining = next_upgrade_time - now
@@ -2338,114 +2397,69 @@ def render_alerts_page():
                 notify_person = row.get("notify_person", "")
 
                 border_color = get_alert_level_color(current_level)
-                if is_unresolved and upgrade_count > 0:
-                    bg_color = "#FEE2E2"
-                elif is_unresolved:
-                    bg_color = "#FFFBEB"
-                else:
-                    bg_color = "#F9FAFB"
-
                 level_emoji = get_alert_level_emoji(current_level)
                 remaining_sec, remaining_str = get_remaining_upgrade_time(row)
 
-                upgrade_badges = ""
-                if upgrade_count > 0:
-                    upgrade_badges = f"""
-                                    <span style="
-                                        margin-left: 6px;
-                                        padding: 2px 10px;
-                                        border-radius: 12px;
-                                        font-size: 11px;
-                                        background-color: #7C3AED;
-                                        color: white;
-                                        font-weight: 600;
-                                    ">⬆️ 已升级 {upgrade_count} 次</span>
-                                    <span style="
-                                        margin-left: 4px;
-                                        font-size: 11px;
-                                        color: #7C3AED;
-                                    ">（初始：{original_level}）</span>
-                    """
-
-                resolved_time_html = ""
-                if str(row["resolved_time"]) != "":
-                    resolved_time_html = f'<span style="margin-right: 16px;">✅ 处理时间：{row["resolved_time"]}</span>'
-
-                notify_html = ""
-                if notify_person:
-                    notify_html = f'<span>👤 当前通知：<strong>{notify_person}</strong></span>'
-
-                remaining_html = ""
-                if is_unresolved:
-                    if remaining_sec is not None and remaining_sec > 0:
-                        urgency_color = "#EF4444" if remaining_sec < 300 else ("#F59E0B" if remaining_sec < 600 else "#6B7280")
-                        remaining_html = f"""
-                            <div style="font-size: 13px; margin-bottom: 8px;">
-                                ⏳ <strong style="color: {urgency_color};">距离下次升级：{remaining_str}</strong>
-                                &nbsp;&nbsp;📅 下次升级时间：{row.get('next_upgrade_time', '')}
-                            </div>
-                        """
-                    elif remaining_sec == 0:
-                        remaining_html = f"""
-                            <div style="font-size: 13px; margin-bottom: 8px;">
-                                🔴 <strong style="color: #EF4444;">升级倒计时已到，即将自动升级！</strong>
-                            </div>
-                        """
-
                 with st.container():
-                    st.markdown(f"""
-                    <div style="
-                        padding: 16px 20px;
-                        border-radius: 8px;
-                        border-left: 5px solid {border_color};
-                        background-color: {bg_color};
-                        margin-bottom: 12px;
-                    ">
-                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                            <div style="flex: 1;">
-                                <div style="font-size: 16px; font-weight: 600; margin-bottom: 6px;">
-                                    {level_emoji} {row['service_name']}
-                                    <span style="
-                                        margin-left: 8px;
-                                        padding: 2px 10px;
-                                        border-radius: 4px;
-                                        font-size: 12px;
-                                        background-color: {border_color};
-                                        color: white;
-                                        font-weight: 600;
-                                    ">{current_level}</span>
-                                    <span style="
-                                        margin-left: 6px;
-                                        padding: 2px 8px;
-                                        border-radius: 4px;
-                                        font-size: 12px;
-                                        background-color: {'#EF4444' if is_unresolved else '#10B981'};
-                                        color: white;
-                                    ">{row['status']}</span>
-                                    {upgrade_badges}
-                                </div>
-                            </div>
-                        </div>
-                        <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px;">
-                            <span style="margin-right: 16px;">🏷️ {row['service_type']}</span>
-                            <span style="margin-right: 16px;">⏰ {row['alert_time']}</span>
-                            {resolved_time_html}
-                            {notify_html}
-                        </div>
-                        {remaining_html}
-                        <div style="font-size: 14px;">
-                            <span style="margin-right: 20px;">
-                                响应时间：<strong style="color: {border_color};">{float(row['response_time']):.0f} ms</strong>
-                            </span>
-                            <span style="margin-right: 20px;">
-                                警告阈值：<strong>{float(row['warning_threshold']):.0f} ms</strong>
-                            </span>
-                            <span>
-                                异常阈值：<strong>{float(row['critical_threshold']):.0f} ms</strong>
-                            </span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    header_cols = st.columns([4, 1, 1, 2])
+                    with header_cols[0]:
+                        title_html = f"{level_emoji} {row['service_name']}"
+                        st.markdown(f"### {title_html}")
+                    with header_cols[1]:
+                        level_bg = {
+                            "警告": "#F59E0B",
+                            "异常": "#EF4444",
+                            "严重": "#DC2626",
+                            "紧急": "#7F1D1D"
+                        }.get(current_level, "#6B7280")
+                        st.markdown(
+                            f"<div style='text-align:center; padding:4px 10px; border-radius:4px; background-color:{level_bg}; color:white; font-size:12px; font-weight:600;'>{current_level}</div>",
+                            unsafe_allow_html=True
+                        )
+                    with header_cols[2]:
+                        status_bg = "#EF4444" if is_unresolved else "#10B981"
+                        st.markdown(
+                            f"<div style='text-align:center; padding:4px 10px; border-radius:4px; background-color:{status_bg}; color:white; font-size:12px; font-weight:600;'>{row['status']}</div>",
+                            unsafe_allow_html=True
+                        )
+                    with header_cols[3]:
+                        if upgrade_count > 0:
+                            st.markdown(
+                                f"<div style='text-align:center; padding:4px 10px; border-radius:12px; background-color:#7C3AED; color:white; font-size:11px; font-weight:600;'>⬆️ 已升级 {upgrade_count} 次（初始：{original_level}）</div>",
+                                unsafe_allow_html=True
+                            )
+
+                    meta_col1, meta_col2, meta_col3, meta_col4 = st.columns(4)
+                    meta_col1.caption(f"🏷️ 服务类型：{row['service_type']}")
+                    meta_col2.caption(f"⏰ 告警时间：{row['alert_time']}")
+                    if str(row.get('resolved_time', '')):
+                        meta_col3.caption(f"✅ 处理时间：{row['resolved_time']}")
+                    else:
+                        meta_col3.caption("⏳ 待处理")
+                    if notify_person:
+                        meta_col4.caption(f"👤 当前通知：{notify_person}")
+                    else:
+                        meta_col4.caption("👤 通知人：未设置")
+
+                    if is_unresolved:
+                        if remaining_sec is not None and remaining_sec > 0:
+                            urgency_color = "#EF4444" if remaining_sec < 300 else ("#F59E0B" if remaining_sec < 600 else "#6B7280")
+                            st.markdown(
+                                f"<div style='padding:8px 12px; border-radius:6px; background-color:{urgency_color}15; margin:8px 0;'>"
+                                f"⏳ <strong style='color:{urgency_color};'>距离下次升级：{remaining_str}</strong>"
+                                f"&nbsp;&nbsp;📅 下次升级时间：{row.get('next_upgrade_time', '待计算')}"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                        elif remaining_sec == 0:
+                            st.error("🔴 升级倒计时已到，即将自动升级！")
+                        else:
+                            st.info(f"⏳ {remaining_str}")
+
+                    resp_col1, resp_col2, resp_col3 = st.columns(3)
+                    resp_col1.metric("响应时间", f"{float(row['response_time']):.0f} ms")
+                    resp_col2.metric("警告阈值", f"{float(row['warning_threshold']):.0f} ms")
+                    resp_col3.metric("异常阈值", f"{float(row['critical_threshold']):.0f} ms")
 
                     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 4])
                     with col_btn1:
@@ -2460,6 +2474,8 @@ def render_alerts_page():
                             st.rerun()
                     with col_btn3:
                         pass
+
+                    st.divider()
 
         with col_detail:
             st.subheader("📋 告警详情")
@@ -4713,9 +4729,48 @@ def render_capacity_planning_page():
         st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
+def run_background_upgrade_check():
+    thresholds = load_thresholds()
+    upgraded = check_and_upgrade_alerts(thresholds)
+    if upgraded:
+        for u in upgraded:
+            st.toast(
+                f"⬆️ 告警升级：{u['service_name']}\n"
+                f"从 {u['old_level']} → {u['new_level']}\n"
+                f"通知：{u['notify_person']}",
+                icon="🚨"
+            )
+    return upgraded
+
+
 def main():
     if "page" not in st.session_state:
         st.session_state["page"] = "dashboard"
+
+    if "last_upgrade_check" not in st.session_state:
+        st.session_state["last_upgrade_check"] = None
+
+    now = datetime.now()
+    should_check = True
+    if st.session_state["last_upgrade_check"]:
+        elapsed = (now - st.session_state["last_upgrade_check"]).total_seconds()
+        if elapsed < 30:
+            should_check = False
+
+    if should_check:
+        run_background_upgrade_check()
+        st.session_state["last_upgrade_check"] = now
+
+    st.markdown(
+        """
+        <script>
+            setTimeout(function() {
+                window.location.reload();
+            }, 60000);
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
 
     if st.session_state["page"] == "dashboard":
         render_dashboard_page()

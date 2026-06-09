@@ -3,7 +3,7 @@
     "API 网关": {
       "service_name": "API 网关",
       "service_type": "网关服务",
-      "avg_response_time": 120.0,
+      "avg_response_time": 120.1,
       "sla_threshold": 200,
       "target_availability": 99.9,
       "total_requests": 15000,
@@ -14,7 +14,7 @@
     "用户认证服务": {
       "service_name": "用户认证服务",
       "service_type": "认证服务",
-      "avg_response_time": 85.1,
+      "avg_response_time": 84.9,
       "sla_threshold": 150,
       "target_availability": 99.95,
       "total_requests": 8500,
@@ -29,8 +29,8 @@
       "sla_threshold": 50,
       "target_availability": 99.99,
       "total_requests": 25000,
-      "success_requests": 21700,
-      "achievement_rate": 86.8,
+      "success_requests": 21695,
+      "achievement_rate": 86.78,
       "is_achieved": false
     },
     "Redis 缓存": {
@@ -40,8 +40,8 @@
       "sla_threshold": 10,
       "target_availability": 99.99,
       "total_requests": 50000,
-      "success_requests": 49670,
-      "achievement_rate": 99.34,
+      "success_requests": 49700,
+      "achievement_rate": 99.4,
       "is_achieved": false
     },
     "MongoDB": {
@@ -58,7 +58,7 @@
     "文件存储服务": {
       "service_name": "文件存储服务",
       "service_type": "存储服务",
-      "avg_response_time": 230.2,
+      "avg_response_time": 230.4,
       "sla_threshold": 300,
       "target_availability": 99.5,
       "total_requests": 3200,
@@ -80,7 +80,7 @@
     "搜索引擎 Elasticsearch": {
       "service_name": "搜索引擎 Elasticsearch",
       "service_type": "搜索服务",
-      "avg_response_time": 350.0,
+      "avg_response_time": 350.3,
       "sla_threshold": 200,
       "target_availability": 99.0,
       "total_requests": 14000,
@@ -91,29 +91,29 @@
     "支付网关": {
       "service_name": "支付网关",
       "service_type": "支付服务",
-      "avg_response_time": 448.5,
+      "avg_response_time": 449.6,
       "sla_threshold": 500,
       "target_availability": 99.99,
       "total_requests": 2100,
-      "success_requests": 1837,
-      "achievement_rate": 87.52,
+      "success_requests": 1817,
+      "achievement_rate": 86.57,
       "is_achieved": false
     },
     "邮件服务": {
       "service_name": "邮件服务",
       "service_type": "通知服务",
-      "avg_response_time": 320.5,
+      "avg_response_time": 320.6,
       "sla_threshold": 400,
       "target_availability": 99.0,
       "total_requests": 4800,
-      "success_requests": 4770,
-      "achievement_rate": 99.38,
+      "success_requests": 4767,
+      "achievement_rate": 99.33,
       "is_achieved": true
     },
     "短信服务": {
       "service_name": "短信服务",
       "service_type": "通知服务",
-      "avg_response_time": 280.6,
+      "avg_response_time": 280.3,
       "sla_threshold": 400,
       "target_availability": 99.0,
       "total_requests": 3600,
@@ -146,7 +146,7 @@
     "日志收集服务": {
       "service_name": "日志收集服务",
       "service_type": "监控服务",
-      "avg_response_time": 94.9,
+      "avg_response_time": 95.0,
       "sla_threshold": 200,
       "target_availability": 99.5,
       "total_requests": 22000,
@@ -157,12 +157,12 @@
     "图像识别服务": {
       "service_name": "图像识别服务",
       "service_type": "AI 服务",
-      "avg_response_time": 1197.1,
+      "avg_response_time": 1194.7,
       "sla_threshold": 1000,
       "target_availability": 95.0,
       "total_requests": 1200,
-      "success_requests": 56,
-      "achievement_rate": 4.67,
+      "success_requests": 63,
+      "achievement_rate": 5.33,
       "is_achieved": false
     }
   },
