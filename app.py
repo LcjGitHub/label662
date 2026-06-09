@@ -59,6 +59,8 @@ ALERTS_CSV = os.path.join(DATA_DIR, "alerts.csv")
 THRESHOLDS_CSV = os.path.join(DATA_DIR, "thresholds.csv")
 SERVICE_STATUS_CSV = os.path.join(DATA_DIR, "service_status.csv")
 DEPENDENCIES_JSON = os.path.join(DATA_DIR, "service_dependencies.json")
+SLA_CONFIG_JSON = os.path.join(DATA_DIR, "sla_config.json")
+SLA_HISTORY_JSON = os.path.join(DATA_DIR, "sla_history.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -87,6 +89,23 @@ DEFAULT_THRESHOLDS = {
     "AI 服务": {"warning_threshold": 1000, "critical_threshold": 2000},
 }
 
+DEFAULT_SLA_CONFIG = {
+    "网关服务": {"sla_threshold": 200, "target_availability": 99.9},
+    "认证服务": {"sla_threshold": 150, "target_availability": 99.95},
+    "数据库": {"sla_threshold": 50, "target_availability": 99.99},
+    "缓存服务": {"sla_threshold": 10, "target_availability": 99.99},
+    "存储服务": {"sla_threshold": 300, "target_availability": 99.5},
+    "消息服务": {"sla_threshold": 100, "target_availability": 99.9},
+    "搜索服务": {"sla_threshold": 200, "target_availability": 99.0},
+    "支付服务": {"sla_threshold": 500, "target_availability": 99.99},
+    "通知服务": {"sla_threshold": 400, "target_availability": 99.0},
+    "网络服务": {"sla_threshold": 50, "target_availability": 99.99},
+    "监控服务": {"sla_threshold": 200, "target_availability": 99.5},
+    "AI 服务": {"sla_threshold": 1000, "target_availability": 95.0},
+}
+
+SLA_COLUMNS = ["service_type", "sla_threshold", "target_availability"]
+
 
 def init_csv_files():
     if not os.path.exists(ALERTS_CSV):
@@ -109,6 +128,14 @@ def init_csv_files():
         with open(SERVICE_STATUS_CSV, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=SERVICE_STATUS_COLUMNS)
             writer.writeheader()
+
+    if not os.path.exists(SLA_CONFIG_JSON):
+        with open(SLA_CONFIG_JSON, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_SLA_CONFIG, f, ensure_ascii=False, indent=2)
+
+    if not os.path.exists(SLA_HISTORY_JSON):
+        with open(SLA_HISTORY_JSON, "w", encoding="utf-8") as f:
+            json.dump({}, f, ensure_ascii=False, indent=2)
 
 
 init_csv_files()
@@ -209,6 +236,205 @@ def save_service_status(status_map):
                 "last_status": info.get("last_status", ""),
                 "last_check_time": now_str
             })
+
+
+def load_sla_config():
+    if os.path.exists(SLA_CONFIG_JSON):
+        with open(SLA_CONFIG_JSON, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        for stype in DEFAULT_SLA_CONFIG:
+            if stype not in config:
+                config[stype] = DEFAULT_SLA_CONFIG[stype].copy()
+        return config
+    return DEFAULT_SLA_CONFIG.copy()
+
+
+def save_sla_config(sla_config):
+    with open(SLA_CONFIG_JSON, "w", encoding="utf-8") as f:
+        json.dump(sla_config, f, ensure_ascii=False, indent=2)
+
+
+def export_sla_config_to_json(sla_config):
+    return json.dumps(sla_config, ensure_ascii=False, indent=2)
+
+
+def import_sla_config_from_json(json_str):
+    try:
+        config = json.loads(json_str)
+        required_keys = ["sla_threshold", "target_availability"]
+        for stype, values in config.items():
+            if not isinstance(values, dict):
+                return None, f"服务类型 {stype} 的配置格式错误"
+            for key in required_keys:
+                if key not in values:
+                    return None, f"服务类型 {stype} 缺少必需字段: {key}"
+        return config, None
+    except json.JSONDecodeError as e:
+        return None, f"JSON 解析错误: {str(e)}"
+    except Exception as e:
+        return None, f"导入失败: {str(e)}"
+
+
+def load_sla_history():
+    if os.path.exists(SLA_HISTORY_JSON):
+        with open(SLA_HISTORY_JSON, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_sla_history(history):
+    with open(SLA_HISTORY_JSON, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def generate_sla_daily_data():
+    services_df = generate_mock_data()
+    sla_config = load_sla_config()
+    history = load_sla_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if today not in history:
+        history[today] = {}
+
+    for _, service in services_df.iterrows():
+        sname = service["service_name"]
+        stype = service["service_type"]
+        base_rt = service["avg_response_time"]
+        sla_cfg = sla_config.get(stype, {"sla_threshold": 200, "target_availability": 99.0})
+        sla_threshold = sla_cfg["sla_threshold"]
+
+        np.random.seed(hash(f"{sname}_{today}") % 2**32)
+        num_samples = 1000
+        samples = np.random.normal(loc=base_rt, scale=base_rt * 0.15, size=num_samples)
+        samples = np.maximum(1, samples)
+        if np.random.random() < 0.1:
+            spike_count = int(num_samples * np.random.uniform(0.01, 0.05))
+            spike_idx = np.random.choice(num_samples, spike_count, replace=False)
+            samples[spike_idx] *= np.random.uniform(1.5, 3.0, spike_count)
+
+        avg_rt = float(np.mean(samples))
+        p95_rt = float(np.percentile(samples, 95))
+        p99_rt = float(np.percentile(samples, 99))
+        success_count = int(np.sum(samples <= sla_threshold))
+        achievement_rate = (success_count / num_samples) * 100
+        is_achieved = achievement_rate >= sla_cfg["target_availability"]
+
+        history[today][sname] = {
+            "service_name": sname,
+            "service_type": stype,
+            "avg_response_time": round(avg_rt, 1),
+            "p95_response_time": round(p95_rt, 1),
+            "p99_response_time": round(p99_rt, 1),
+            "sla_threshold": sla_threshold,
+            "target_availability": sla_cfg["target_availability"],
+            "total_requests": num_samples,
+            "success_requests": success_count,
+            "achievement_rate": round(achievement_rate, 2),
+            "is_achieved": is_achieved
+        }
+
+    save_sla_history(history)
+    return history
+
+
+def get_last_7_days_sla():
+    history = generate_sla_daily_data()
+    services_df = generate_mock_data()
+    all_service_names = sorted(services_df["service_name"].tolist())
+
+    date_list = []
+    for i in range(6, -1, -1):
+        day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        date_list.append(day)
+
+    result = {}
+    for sname in all_service_names:
+        service_data = []
+        for day in date_list:
+            if day in history and sname in history[day]:
+                service_data.append(history[day][sname])
+            else:
+                svc = services_df[services_df["service_name"] == sname]
+                if len(svc) > 0:
+                    svc_row = svc.iloc[0]
+                    stype = svc_row["service_type"]
+                    sla_cfg = load_sla_config().get(stype, {"sla_threshold": 200, "target_availability": 99.0})
+                    base_rt = svc_row["avg_response_time"]
+                    np.random.seed(hash(f"{sname}_{day}") % 2**32)
+                    num_samples = 1000
+                    samples = np.random.normal(loc=base_rt, scale=base_rt * 0.15, size=num_samples)
+                    samples = np.maximum(1, samples)
+                    avg_rt = float(np.mean(samples))
+                    success_count = int(np.sum(samples <= sla_cfg["sla_threshold"]))
+                    achievement_rate = (success_count / num_samples) * 100
+                    is_achieved = achievement_rate >= sla_cfg["target_availability"]
+                    day_data = {
+                        "service_name": sname,
+                        "service_type": stype,
+                        "avg_response_time": round(avg_rt, 1),
+                        "p95_response_time": round(float(np.percentile(samples, 95)), 1),
+                        "p99_response_time": round(float(np.percentile(samples, 99)), 1),
+                        "sla_threshold": sla_cfg["sla_threshold"],
+                        "target_availability": sla_cfg["target_availability"],
+                        "total_requests": num_samples,
+                        "success_requests": success_count,
+                        "achievement_rate": round(achievement_rate, 2),
+                        "is_achieved": is_achieved
+                    }
+                    service_data.append(day_data)
+                    if day not in history:
+                        history[day] = {}
+                    history[day][sname] = day_data
+        result[sname] = {"dates": date_list, "data": service_data}
+
+    save_sla_history(history)
+    return result
+
+
+def compute_consecutive_achieved_days(service_trend_data):
+    data = service_trend_data["data"]
+    count = 0
+    for i in range(len(data) - 1, -1, -1):
+        if data[i]["is_achieved"]:
+            count += 1
+        else:
+            break
+    return count
+
+
+def compute_sla_summary():
+    all_trends = get_last_7_days_sla()
+    sla_config = load_sla_config()
+    services_df = generate_mock_data()
+
+    summary = []
+    for sname, trend in all_trends.items():
+        if not trend["data"]:
+            continue
+        latest = trend["data"][-1]
+        all_rates = [d["achievement_rate"] for d in trend["data"]]
+        avg_achievement = float(np.mean(all_rates))
+        consecutive_days = compute_consecutive_achieved_days(trend)
+        all_rts = [d["avg_response_time"] for d in trend["data"]]
+        avg_rt = float(np.mean(all_rts))
+
+        svc_row = services_df[services_df["service_name"] == sname]
+        stype = svc_row["service_type"].values[0] if len(svc_row) > 0 else latest.get("service_type", "")
+        sla_cfg = sla_config.get(stype, {"sla_threshold": 200, "target_availability": 99.0})
+
+        summary.append({
+            "service_name": sname,
+            "service_type": stype,
+            "sla_threshold": latest.get("sla_threshold", sla_cfg["sla_threshold"]),
+            "target_availability": latest.get("target_availability", sla_cfg["target_availability"]),
+            "avg_response_time": round(avg_rt, 1),
+            "achievement_rate": round(latest["achievement_rate"], 2),
+            "week_avg_achievement": round(avg_achievement, 2),
+            "is_achieved": latest["is_achieved"],
+            "consecutive_days": consecutive_days
+        })
+
+    return pd.DataFrame(summary)
 
 
 def generate_alert_id():
@@ -595,6 +821,14 @@ def render_dashboard_page():
             st.session_state["page"] = "dependency"
             st.rerun()
 
+        if st.button("📊 SLA 达成率统计", use_container_width=True, type="secondary", key="sidebar_sla_stats_btn"):
+            st.session_state["page"] = "sla_stats"
+            st.rerun()
+
+        if st.button("⚙️ SLA 配置管理", use_container_width=True, type="secondary", key="sidebar_sla_cfg_btn"):
+            st.session_state["page"] = "sla_config"
+            st.rerun()
+
         st.divider()
 
         st.subheader("⚙️ 告警阈值设置")
@@ -707,6 +941,133 @@ def render_dashboard_page():
         if st.button("📋 查看告警历史", use_container_width=True, type="primary" if unresolved_count > 0 else "secondary", key="metric_alert_btn"):
             st.session_state["page"] = "alerts"
             st.rerun()
+
+    st.divider()
+
+    sla_summary_df = compute_sla_summary()
+    st.subheader("🎯 SLA 服务等级协议概览")
+
+    if not sla_summary_df.empty:
+        total_sla_services = len(sla_summary_df)
+        achieved_services = len(sla_summary_df[sla_summary_df["is_achieved"] == True])
+        not_achieved_services = total_sla_services - achieved_services
+        overall_sla_rate = sla_summary_df["achievement_rate"].mean()
+
+        sla_col1, sla_col2, sla_col3 = st.columns([2, 1, 2])
+
+        with sla_col1:
+            ov_label = "🟢 优秀" if overall_sla_rate >= 99 else ("🟡 良好" if overall_sla_rate >= 95 else "🔴 需改进")
+            sla_color = "#10B981" if overall_sla_rate >= 99 else ("#F59E0B" if overall_sla_rate >= 95 else "#EF4444")
+
+            fig_overall = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=overall_sla_rate,
+                domain={"x": [0, 1], "y": [0, 1]},
+                title={"text": f"整体 SLA 达成率 {ov_label}", "font": {"size": 16}},
+                gauge={
+                    "axis": {"range": [None, 100], "tickwidth": 1},
+                    "bar": {"color": sla_color},
+                    "bgcolor": "white",
+                    "borderwidth": 2,
+                    "bordercolor": "#E5E7EB",
+                    "steps": [
+                        {"range": [0, 95], "color": "#FEE2E2"},
+                        {"range": [95, 99], "color": "#FEF3C7"},
+                        {"range": [99, 99.9], "color": "#DBEAFE"},
+                        {"range": [99.9, 100], "color": "#D1FAE5"}
+                    ]
+                },
+                number={
+                    "suffix": "%",
+                    "font": {"size": 40, "color": sla_color},
+                    "valueformat": ".2f"
+                }
+            ))
+            fig_overall.update_layout(
+                height=280,
+                margin=dict(l=10, r=10, t=50, b=10),
+                paper_bgcolor="white",
+                plot_bgcolor="#F9FAFB"
+            )
+            st.plotly_chart(fig_overall, use_container_width=True)
+
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("📊 查看 SLA 详情", use_container_width=True, type="primary", key="home_sla_stats_btn"):
+                    st.session_state["page"] = "sla_stats"
+                    st.rerun()
+            with col_btn2:
+                if st.button("⚙️ 配置 SLA 阈值", use_container_width=True, type="secondary", key="home_sla_cfg_btn"):
+                    st.session_state["page"] = "sla_config"
+                    st.rerun()
+
+        with sla_col2:
+            st.markdown(f"""
+            <div style="padding: 20px; background-color: white; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: 280px;">
+                <div style="font-size: 14px; color: #6B7280; margin-bottom: 16px;">
+                    📋 SLA 服务概况
+                </div>
+                <div style="margin-bottom: 20px;">
+                    <div style="font-size: 32px; font-weight: 700; color: #1F2937;">
+                        {total_sla_services}
+                    </div>
+                    <div style="font-size: 13px; color: #6B7280;">
+                        服务总数
+                    </div>
+                </div>
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="font-size: 13px; color: #10B981;">✅ 已达标</span>
+                        <span style="font-size: 24px; font-weight: 700; color: #10B981;">{achieved_services}</span>
+                    </div>
+                </div>
+                <div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="font-size: 13px; color: #EF4444;">❌ 未达标</span>
+                        <span style="font-size: 24px; font-weight: 700; color: #EF4444;">{not_achieved_services}</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with sla_col3:
+            top3_services = sla_summary_df.sort_values("achievement_rate", ascending=False).head(3)
+            top3_items = []
+            for rank_idx, (_, svc) in enumerate(top3_services.iterrows()):
+                rank = rank_idx + 1
+                medal = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
+                rate_color = "#10B981" if svc["achievement_rate"] >= 99 else ("#F59E0B" if svc["achievement_rate"] >= 95 else "#EF4444")
+                top3_items.append(f"""
+                <div style="
+                    padding: 10px 14px;
+                    margin-bottom: {10 if rank_idx < 2 else 0}px;
+                    background-color: #F9FAFB;
+                    border-radius: 8px;
+                    border-left: 4px solid {rate_color};
+                ">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span style="font-size: 16px;">{medal}</span>
+                            <span style="font-size: 14px; font-weight: 600; margin-left: 6px;">{svc['service_name']}</span>
+                        </div>
+                        <div style="font-size: 16px; font-weight: 700; color: {rate_color};">
+                            {svc['achievement_rate']:.2f}%
+                        </div>
+                    </div>
+                    <div style="font-size: 11px; color: #6B7280; margin-top: 2px;">
+                        {svc['service_type']} · 连续达标 {svc['consecutive_days']} 天
+                    </div>
+                </div>
+                """)
+            top3_html = "".join(top3_items)
+            st.markdown(f"""
+            <div style="padding: 20px; background-color: white; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-height: 280px;">
+                <div style="font-size: 14px; color: #6B7280; margin-bottom: 16px;">
+                    🏆 SLA 达成率排名 Top 3
+                </div>
+                {top3_html}
+            </div>
+            """, unsafe_allow_html=True)
 
     st.divider()
 
@@ -2049,6 +2410,453 @@ def render_dependency_page():
         st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
+def render_sla_config_page():
+    sla_config = load_sla_config()
+
+    with st.sidebar:
+        st.header("⚙️ SLA 配置")
+
+        if st.button("← 返回监控首页", use_container_width=True, key="sla_cfg_back_btn"):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        if st.button("📊 SLA 统计页面", use_container_width=True, type="secondary", key="go_to_sla_stats"):
+            st.session_state["page"] = "sla_stats"
+            st.rerun()
+
+        st.divider()
+        st.subheader("📤 配置导入导出")
+
+        if st.button("📥 导出配置 JSON", use_container_width=True, key="export_sla_btn"):
+            json_str = export_sla_config_to_json(sla_config)
+            st.session_state["sla_export_data"] = json_str
+            st.success("✅ 配置已准备好导出！")
+
+        if "sla_export_data" in st.session_state:
+            st.download_button(
+                label="💾 下载配置文件",
+                data=st.session_state["sla_export_data"],
+                file_name=f"sla_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="download_sla_cfg"
+            )
+
+        st.divider()
+        st.subheader("📥 导入配置")
+        uploaded_file = st.file_uploader("选择 JSON 配置文件", type=["json"], key="sla_upload")
+        if uploaded_file is not None:
+            try:
+                content = uploaded_file.read().decode("utf-8")
+                imported_cfg, error = import_sla_config_from_json(content)
+                if error:
+                    st.error(f"❌ {error}")
+                else:
+                    st.success(f"✅ 成功解析 {len(imported_cfg)} 个服务类型配置")
+                    if st.button("✅ 确认导入并覆盖", use_container_width=True, type="primary", key="confirm_import_sla"):
+                        save_sla_config(imported_cfg)
+                        st.success("🎉 配置已成功导入！")
+                        del st.session_state["sla_export_data"]
+                        st.cache_data.clear()
+                        st.rerun()
+            except Exception as e:
+                st.error(f"❌ 读取文件失败: {str(e)}")
+
+        st.divider()
+        if st.button("🔄 恢复默认配置", use_container_width=True, key="reset_sla_default"):
+            save_sla_config(DEFAULT_SLA_CONFIG.copy())
+            st.success("✅ 已恢复默认配置！")
+            st.cache_data.clear()
+            st.rerun()
+
+        st.divider()
+        st.caption(f"💾 SLA 配置文件：{SLA_CONFIG_JSON}")
+        st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    st.title("⚙️ SLA 服务等级协议配置")
+    st.markdown("为每种服务类型设定 SLA 标准阈值和目标可用性，支持配置导入导出")
+    st.divider()
+
+    col_stats1, col_stats2, col_stats3 = st.columns(3)
+    with col_stats1:
+        st.metric(label="📋 服务类型总数", value=f"{len(sla_config)} 种")
+    with col_stats2:
+        all_thresholds = [v["sla_threshold"] for v in sla_config.values()]
+        avg_th = np.mean(all_thresholds)
+        st.metric(label="📏 平均响应时间标准", value=f"{avg_th:.0f} ms")
+    with col_stats3:
+        all_targets = [v["target_availability"] for v in sla_config.values()]
+        avg_target = np.mean(all_targets)
+        st.metric(label="🎯 平均目标可用性", value=f"{avg_target:.2f}%")
+
+    st.divider()
+
+    col_actions1, col_actions2 = st.columns([3, 1])
+    with col_actions1:
+        st.subheader("📋 SLA 阈值配置表")
+    with col_actions2:
+        if st.button("💾 保存所有修改", use_container_width=True, type="primary", key="save_all_sla_cfg"):
+            save_sla_config(sla_config)
+            st.success("✅ 所有配置已保存！")
+            st.cache_data.clear()
+            st.rerun()
+
+    config_df = pd.DataFrame([
+        {
+            "服务类型": stype,
+            "响应时间标准 (ms)": cfg["sla_threshold"],
+            "目标可用性 (%)": cfg["target_availability"]
+        }
+        for stype, cfg in sla_config.items()
+    ])
+    st.dataframe(config_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("✏️ 逐项调整配置")
+
+    sorted_types = sorted(sla_config.keys())
+    for stype in sorted_types:
+        current = sla_config[stype]
+        with st.expander(f"📌 {stype}", expanded=False):
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                new_threshold = st.number_input(
+                    "响应时间 SLA 标准 (ms)",
+                    min_value=1,
+                    max_value=10000,
+                    value=int(current["sla_threshold"]),
+                    key=f"sla_th_{stype}",
+                    help=f"{stype} 的平均响应时间应小于此值才算达标"
+                )
+            with col2:
+                new_target = st.number_input(
+                    "目标可用性 (%)",
+                    min_value=50.0,
+                    max_value=100.0,
+                    value=float(current["target_availability"]),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"sla_target_{stype}",
+                    help="在统计周期内请求响应达标比例的目标值"
+                )
+            with col3:
+                st.markdown("<div style='visibility:hidden;'>_</div>", unsafe_allow_html=True)
+                if st.button("💾 保存此项", key=f"save_sla_{stype}", use_container_width=True):
+                    sla_config[stype]["sla_threshold"] = new_threshold
+                    sla_config[stype]["target_availability"] = new_target
+                    save_sla_config(sla_config)
+                    st.success(f"✅ {stype} 配置已保存！")
+                    st.cache_data.clear()
+                    st.rerun()
+
+            if new_threshold != current["sla_threshold"] or new_target != current["target_availability"]:
+                sla_config[stype]["sla_threshold"] = new_threshold
+                sla_config[stype]["target_availability"] = new_target
+
+            st.markdown(f"""
+            <div style="margin-top: 8px; padding: 12px; background-color: #EFF6FF; border-radius: 6px; font-size: 13px;">
+                <strong>💡 配置说明：</strong><br>
+                该服务类型下的所有服务，在统计周期内响应时间 ≤ <strong>{new_threshold} ms</strong> 的请求比例 ≥ 
+                <strong>{new_target:.2f}%</strong>，即为 SLA 达标。
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.divider()
+    col_footer1, col_footer2 = st.columns(2)
+    with col_footer1:
+        st.caption(f"💾 SLA 配置持久化存储于：{SLA_CONFIG_JSON}")
+    with col_footer2:
+        st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def render_sla_stats_page():
+    sla_summary_df = compute_sla_summary()
+    all_trends = get_last_7_days_sla()
+    sla_config = load_sla_config()
+
+    with st.sidebar:
+        st.header("📊 SLA 统计")
+
+        if st.button("← 返回监控首页", use_container_width=True, key="sla_stats_back_btn"):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        if st.button("⚙️ SLA 配置页面", use_container_width=True, type="secondary", key="go_to_sla_cfg"):
+            st.session_state["page"] = "sla_config"
+            st.rerun()
+
+        st.divider()
+        st.subheader("🔍 筛选选项")
+
+        all_service_types = ["全部"] + sorted(sla_summary_df["service_type"].unique().tolist())
+        selected_type = st.selectbox("服务类型", all_service_types, key="sla_stats_type_filter")
+
+        status_options = ["全部", "已达标", "未达标"]
+        selected_status = st.selectbox("达标状态", status_options, key="sla_stats_status_filter")
+
+        st.divider()
+        st.subheader("📈 显示选项")
+        show_gauge = st.checkbox("显示仪表盘图表", value=True, key="sla_show_gauge")
+        show_trend = st.checkbox("显示 7 天趋势卡片", value=True, key="sla_show_trend")
+        show_table = st.checkbox("显示详细数据表格", value=True, key="sla_show_table")
+
+        st.divider()
+        st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption("💡 提示：SLA 数据为模拟生成")
+
+    st.title("📊 SLA 服务等级协议统计")
+    st.markdown("统计各服务 SLA 达成情况，包含仪表盘、趋势分析和详细数据")
+    st.divider()
+
+    filtered_df = sla_summary_df.copy()
+    if selected_type != "全部":
+        filtered_df = filtered_df[filtered_df["service_type"] == selected_type]
+    if selected_status != "全部":
+        is_achieved = selected_status == "已达标"
+        filtered_df = filtered_df[filtered_df["is_achieved"] == is_achieved]
+
+    col_stats1, col_stats2, col_stats3, col_stats4, col_stats5 = st.columns(5)
+    total_services = len(filtered_df)
+    achieved_count = len(filtered_df[filtered_df["is_achieved"] == True]) if total_services > 0 else 0
+    not_achieved_count = total_services - achieved_count
+    overall_achievement = filtered_df["achievement_rate"].mean() if total_services > 0 else 0
+    overall_avg_rt = filtered_df["avg_response_time"].mean() if total_services > 0 else 0
+    avg_consecutive = filtered_df["consecutive_days"].mean() if total_services > 0 else 0
+
+    with col_stats1:
+        st.metric(label="📦 服务总数", value=f"{total_services} 个")
+    with col_stats2:
+        ach_color = "normal" if achieved_count == total_services else ("off" if achieved_count > 0 else "inverse")
+        st.metric(label="✅ 已达标服务", value=f"{achieved_count} 个", delta_color=ach_color)
+    with col_stats3:
+        st.metric(label="❌ 未达标服务", value=f"{not_achieved_count} 个", delta_color="inverse" if not_achieved_count > 0 else "normal")
+    with col_stats4:
+        ov_label = "🟢 优秀" if overall_achievement >= 99 else ("🟡 良好" if overall_achievement >= 95 else "🔴 需改进")
+        st.metric(label=f"🎯 整体达成率 {ov_label}", value=f"{overall_achievement:.2f}%")
+    with col_stats5:
+        st.metric(label="🔥 平均连续达标", value=f"{avg_consecutive:.0f} 天")
+
+    st.divider()
+
+    if show_gauge and total_services > 0:
+        st.subheader("🎯 各服务 SLA 达成率仪表盘")
+
+        services_to_show = filtered_df.sort_values("achievement_rate", ascending=False)
+        num_services = len(services_to_show)
+        cols_per_row = 4
+        num_rows = (num_services + cols_per_row - 1) // cols_per_row
+
+        for row_idx in range(num_rows):
+            cols = st.columns(cols_per_row)
+            for col_idx in range(cols_per_row):
+                svc_idx = row_idx * cols_per_row + col_idx
+                if svc_idx >= num_services:
+                    break
+                svc = services_to_show.iloc[svc_idx]
+                with cols[col_idx]:
+                    rate = svc["achievement_rate"]
+                    target = svc["target_availability"]
+                    is_ok = svc["is_achieved"]
+
+                    if rate >= 99.9:
+                        color = "#10B981"
+                    elif rate >= 99:
+                        color = "#3B82F6"
+                    elif rate >= 95:
+                        color = "#F59E0B"
+                    else:
+                        color = "#EF4444"
+
+                    fig = go.Figure(go.Indicator(
+                        mode="gauge+number+delta",
+                        value=rate,
+                        domain={"x": [0, 1], "y": [0, 1]},
+                        title={"text": f"{svc['service_name']}", "font": {"size": 14}},
+                        delta={
+                            "reference": target,
+                            "relative": False,
+                            "increasing": {"color": "#10B981"},
+                            "decreasing": {"color": "#EF4444"},
+                            "valueformat": ".2f"
+                        },
+                        gauge={
+                            "axis": {"range": [None, 100], "tickwidth": 1},
+                            "bar": {"color": color},
+                            "bgcolor": "white",
+                            "borderwidth": 2,
+                            "bordercolor": "#E5E7EB",
+                            "steps": [
+                                {"range": [0, 95], "color": "#FEE2E2"},
+                                {"range": [95, 99], "color": "#FEF3C7"},
+                                {"range": [99, 99.9], "color": "#DBEAFE"},
+                                {"range": [99.9, 100], "color": "#D1FAE5"}
+                            ],
+                            "threshold": {
+                                "line": {"color": "#6B7280", "width": 3},
+                                "thickness": 0.8,
+                                "value": target
+                            }
+                        },
+                        number={
+                            "suffix": "%",
+                            "font": {"size": 28, "color": color},
+                            "valueformat": ".2f"
+                        }
+                    ))
+                    fig.update_layout(
+                        height=260,
+                        margin=dict(l=10, r=10, t=40, b=10),
+                        paper_bgcolor="white",
+                        plot_bgcolor="#F9FAFB"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    status_badge = "✅ 达标" if is_ok else "❌ 未达标"
+                    badge_color = "#10B981" if is_ok else "#EF4444"
+                    st.markdown(f"""
+                    <div style="text-align: center; margin-top: -20px; margin-bottom: 20px;">
+                        <span style="padding: 3px 10px; border-radius: 12px; background-color: {badge_color}; color: white; font-size: 12px; font-weight: 600;">
+                            {status_badge}
+                        </span>
+                        <span style="margin-left: 6px; font-size: 12px; color: #6B7280;">
+                            标准: {svc['sla_threshold']:.0f}ms | 目标: {target}%
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        st.divider()
+
+    if show_trend and total_services > 0:
+        st.subheader("📈 最近 7 天 SLA 达成率趋势")
+
+        trend_services = filtered_df.sort_values("achievement_rate", ascending=False).head(6)
+        num_trend = len(trend_services)
+        tcols_per_row = 3
+        trows = (num_trend + tcols_per_row - 1) // tcols_per_row
+
+        for trow in range(trows):
+            tcols = st.columns(tcols_per_row)
+            for tcol in range(tcols_per_row):
+                tidx = trow * tcols_per_row + tcol
+                if tidx >= num_trend:
+                    break
+                svc_row = trend_services.iloc[tidx]
+                sname = svc_row["service_name"]
+                trend_data = all_trends.get(sname, {"dates": [], "data": []})
+
+                if trend_data["data"]:
+                    dates = trend_data["dates"]
+                    rates = [d["achievement_rate"] for d in trend_data["data"]]
+                    targets = [d["target_availability"] for d in trend_data["data"]]
+                    display_dates = [d[5:] for d in dates]
+
+                    fig_trend = go.Figure()
+                    fig_trend.add_trace(go.Scatter(
+                        x=display_dates,
+                        y=rates,
+                        mode="lines+markers",
+                        name="实际达成率",
+                        line=dict(color="#3B82F6", width=3),
+                        marker=dict(size=8, color="#3B82F6"),
+                        fill="tozeroy",
+                        fillcolor="rgba(59, 130, 246, 0.1)"
+                    ))
+                    fig_trend.add_trace(go.Scatter(
+                        x=display_dates,
+                        y=targets,
+                        mode="lines",
+                        name="目标值",
+                        line=dict(color="#EF4444", width=2, dash="dash")
+                    ))
+                    fig_trend.update_layout(
+                        title=f"📈 {sname}",
+                        height=260,
+                        margin=dict(l=40, r=20, t=50, b=40),
+                        yaxis=dict(range=[max(80, min(rates) - 2), 100.5], title="达成率 (%)"),
+                        xaxis=dict(title="日期"),
+                        legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5),
+                        plot_bgcolor="#F9FAFB",
+                        paper_bgcolor="white"
+                    )
+                    fig_trend.add_hline(
+                        y=svc_row["target_availability"],
+                        line_dash="dash",
+                        line_color="#EF4444",
+                        opacity=0.7
+                    )
+                    with tcols[tcol]:
+                        st.plotly_chart(fig_trend, use_container_width=True)
+                        st.markdown(f"""
+                        <div style="text-align: center; margin-top: -10px; margin-bottom: 20px; font-size: 13px;">
+                            🔥 连续达标 <strong style="color: {'#10B981' if svc_row['consecutive_days'] >= 3 else '#F59E0B'};">{svc_row['consecutive_days']}</strong> 天
+                            &nbsp;|&nbsp; 周均 <strong>{svc_row['week_avg_achievement']:.2f}%</strong>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+        st.divider()
+
+    if show_table:
+        st.subheader("📋 SLA 详情数据")
+
+        if filtered_df.empty:
+            st.info("暂无符合筛选条件的数据")
+        else:
+            display_df = filtered_df.copy()
+            display_df["达标状态"] = display_df["is_achieved"].apply(lambda x: "✅ 已达标" if x else "❌ 未达标")
+            display_df = display_df[[
+                "service_name", "service_type", "sla_threshold",
+                "target_availability", "avg_response_time",
+                "achievement_rate", "week_avg_achievement",
+                "consecutive_days", "达标状态"
+            ]]
+            display_df.columns = [
+                "服务名称", "服务类型", "SLA 标准值(ms)",
+                "目标可用性(%)", "实际平均值(ms)",
+                "达成率(%)", "周均达成率(%)",
+                "连续达标天数", "达标状态"
+            ]
+
+            def color_sla_status(val):
+                if "已达标" in str(val):
+                    return "background-color: #D1FAE5; color: #065F46; font-weight: 600;"
+                elif "未达标" in str(val):
+                    return "background-color: #FEE2E2; color: #991B1B; font-weight: 600;"
+                return ""
+
+            def color_rate(val):
+                if val >= 99.9:
+                    return "background-color: #D1FAE5; color: #065F46; font-weight: 600;"
+                elif val >= 99:
+                    return "background-color: #DBEAFE; color: #1E40AF; font-weight: 600;"
+                elif val >= 95:
+                    return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+                else:
+                    return "background-color: #FEE2E2; color: #991B1B; font-weight: 600;"
+
+            styled_df = display_df.style \
+                .applymap(color_sla_status, subset=["达标状态"]) \
+                .applymap(color_rate, subset=["达成率(%)", "周均达成率(%)"])
+
+            st.dataframe(styled_df, use_container_width=True, hide_index=True, height=500)
+
+            col_exp1, col_exp2 = st.columns([1, 4])
+            with col_exp1:
+                csv_data = display_df.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button(
+                    label="📥 导出 CSV",
+                    data=csv_data,
+                    file_name=f"sla_details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+    st.divider()
+    col_footer1, col_footer2 = st.columns(2)
+    with col_footer1:
+        st.caption(f"💾 SLA 历史数据：{SLA_HISTORY_JSON}")
+    with col_footer2:
+        st.caption(f"🔧 技术栈：Streamlit + Plotly | 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
 def main():
     if "page" not in st.session_state:
         st.session_state["page"] = "dashboard"
@@ -2061,6 +2869,10 @@ def main():
         render_trend_page()
     elif st.session_state["page"] == "dependency":
         render_dependency_page()
+    elif st.session_state["page"] == "sla_config":
+        render_sla_config_page()
+    elif st.session_state["page"] == "sla_stats":
+        render_sla_stats_page()
     else:
         render_dashboard_page()
 

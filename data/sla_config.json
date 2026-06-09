@@ -1,0 +1,50 @@
+{
+  "网关服务": {
+    "sla_threshold": 200,
+    "target_availability": 99.9
+  },
+  "认证服务": {
+    "sla_threshold": 150,
+    "target_availability": 99.95
+  },
+  "数据库": {
+    "sla_threshold": 50,
+    "target_availability": 99.99
+  },
+  "缓存服务": {
+    "sla_threshold": 10,
+    "target_availability": 99.99
+  },
+  "存储服务": {
+    "sla_threshold": 300,
+    "target_availability": 99.5
+  },
+  "消息服务": {
+    "sla_threshold": 100,
+    "target_availability": 99.9
+  },
+  "搜索服务": {
+    "sla_threshold": 200,
+    "target_availability": 99.0
+  },
+  "支付服务": {
+    "sla_threshold": 500,
+    "target_availability": 99.99
+  },
+  "通知服务": {
+    "sla_threshold": 400,
+    "target_availability": 99.0
+  },
+  "网络服务": {
+    "sla_threshold": 50,
+    "target_availability": 99.99
+  },
+  "监控服务": {
+    "sla_threshold": 200,
+    "target_availability": 99.5
+  },
+  "AI 服务": {
+    "sla_threshold": 1000,
+    "target_availability": 95.0
+  }
+}
