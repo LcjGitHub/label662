@@ -771,36 +771,56 @@ def fit_linear_trend(response_times):
     return float(slope), float(intercept)
 
 
-def predict_future_response_times(current_rt, history_rts, prediction_hours=24, volatility=0.15):
+def predict_future_response_times(current_rt, history_rts, prediction_hours=24):
     if len(history_rts) == 0:
-        return [current_rt] * prediction_hours
+        return [round(current_rt, 1)] * prediction_hours
     slope, intercept = fit_linear_trend(history_rts)
     predictions = []
-    base_rt = history_rts[-1] if len(history_rts) > 0 else current_rt
+    base_rt = float(history_rts[-1]) if len(history_rts) > 0 else float(current_rt)
+    mean_rt = float(np.mean(history_rts)) if len(history_rts) > 0 else float(current_rt)
     for hour in range(1, prediction_hours + 1):
         trend_rt = base_rt + slope * hour
-        mean_rt = np.mean(history_rts) if len(history_rts) > 0 else current_rt
-        std_rt = np.std(history_rts) if len(history_rts) > 1 else mean_rt * volatility
-        noise = np.random.normal(0, std_rt * 0.3)
-        predicted_rt = max(0.5, trend_rt * 0.7 + (mean_rt + slope * hour) * 0.3 + noise)
+        predicted_rt = max(0.5, trend_rt * 0.7 + (mean_rt + slope * hour) * 0.3)
         predictions.append(round(predicted_rt, 1))
     return predictions
 
 
-def compute_violation_probability(predicted_rts, sla_threshold, history_rts=None):
+def compute_violation_probability(predicted_rts, sla_threshold, history_rts=None, history_achievement_rates=None, consecutive_achieved_days=0, target_availability=99.0):
     if not predicted_rts:
         return 0.0
     violation_count = sum(1 for rt in predicted_rts if rt > sla_threshold)
     base_prob = (violation_count / len(predicted_rts)) * 100
+
+    recent_violation_factor = 0.0
+    trend_factor = 0.0
     if history_rts and len(history_rts) >= 3:
         recent_rts = history_rts[-3:]
         recent_violation = sum(1 for rt in recent_rts if rt > sla_threshold) / len(recent_rts)
+        recent_violation_factor = recent_violation * 100
         slope, _ = fit_linear_trend(history_rts)
-        trend_factor = max(0.0, min(1.0, slope / (sla_threshold * 0.1))) if sla_threshold > 0 else 0.0
-        final_prob = base_prob * 0.5 + recent_violation * 100 * 0.3 + trend_factor * 100 * 0.2
-        final_prob = max(0.0, min(100.0, final_prob))
-        return round(final_prob, 1)
-    return round(base_prob, 1)
+        trend_factor = max(0.0, min(1.0, slope / (sla_threshold * 0.1))) * 100 if sla_threshold > 0 else 0.0
+
+    achievement_factor = 0.0
+    if history_achievement_rates and len(history_achievement_rates) > 0:
+        avg_achievement = float(np.mean(history_achievement_rates))
+        achievement_gap = max(0.0, target_availability - avg_achievement)
+        achievement_factor = min(100.0, achievement_gap * 5.0)
+
+    consecutive_factor = 0.0
+    if consecutive_achieved_days > 0:
+        consecutive_factor = max(0.0, -2.0 * consecutive_achieved_days)
+    else:
+        consecutive_factor = 15.0
+
+    final_prob = (
+        base_prob * 0.35
+        + recent_violation_factor * 0.20
+        + trend_factor * 0.15
+        + achievement_factor * 0.20
+        + max(0.0, consecutive_factor) * 0.10
+    )
+    final_prob = max(0.0, min(100.0, final_prob))
+    return round(final_prob, 1)
 
 
 def get_optimization_suggestions(service_name, service_type, current_rt, predicted_rt, sla_threshold, violation_prob, predicted_rts=None):
@@ -850,10 +870,16 @@ def compute_sla_violation_predictions():
         current_rt = float(row["avg_response_time"])
         sla_cfg = sla_config.get(stype, {"sla_threshold": 200, "target_availability": 99.0})
         sla_threshold = float(sla_cfg["sla_threshold"])
+        target_availability = float(sla_cfg.get("target_availability", 99.0))
 
         history_rts = []
+        history_achievement_rates = []
+        consecutive_days = 0
         if sname in all_trends:
-            history_rts = [float(d["avg_response_time"]) for d in all_trends[sname]["data"] if d.get("avg_response_time")]
+            trend_data = all_trends[sname]
+            history_rts = [float(d["avg_response_time"]) for d in trend_data["data"] if d.get("avg_response_time")]
+            history_achievement_rates = [float(d["achievement_rate"]) for d in trend_data["data"] if d.get("achievement_rate") is not None]
+            consecutive_days = compute_consecutive_achieved_days(trend_data)
 
         if len(history_rts) == 0:
             history_rts = [current_rt]
@@ -861,7 +887,12 @@ def compute_sla_violation_predictions():
         predicted_rts = predict_future_response_times(
             current_rt, history_rts, prediction_hours=prediction_hours
         )
-        violation_prob = compute_violation_probability(predicted_rts, sla_threshold, history_rts)
+        violation_prob = compute_violation_probability(
+            predicted_rts, sla_threshold, history_rts,
+            history_achievement_rates=history_achievement_rates,
+            consecutive_achieved_days=consecutive_days,
+            target_availability=target_availability
+        )
         avg_predicted_rt = round(float(np.mean(predicted_rts)), 1)
         max_predicted_rt = round(float(np.max(predicted_rts)), 1)
 
@@ -888,6 +919,8 @@ def compute_sla_violation_predictions():
             "risk_level": risk_level,
             "predicted_hourly_rts": predicted_rts,
             "history_rts": history_rts,
+            "history_achievement_rates": history_achievement_rates,
+            "consecutive_achieved_days": consecutive_days,
             "suggestions": suggestions,
             "is_warning": violation_prob >= warning_threshold
         })
@@ -5009,6 +5042,18 @@ def render_sla_config_page():
     st.markdown("为每种服务类型设定 SLA 标准阈值和目标可用性，支持配置导入导出")
     st.divider()
 
+    effective_warning_threshold = new_warning_threshold
+    saved_warning_threshold = float(prediction_config.get("violation_warning_threshold", 60.0))
+    threshold_synced = abs(effective_warning_threshold - saved_warning_threshold) < 0.01
+    if not threshold_synced:
+        st.info(
+            f"💡 当前侧边栏预警阈值为 {effective_warning_threshold}%，页面筛选已按此值实时生效。"
+            f" 点击「💾 保存预测设置」可将阈值持久化保存。"
+        )
+
+    if not prediction_df.empty:
+        prediction_df["is_warning"] = prediction_df["violation_probability"] >= effective_warning_threshold
+
     high_risk_df = prediction_df[prediction_df["is_warning"]] if not prediction_df.empty else prediction_df
     critical_risk_df = prediction_df[prediction_df["risk_level"] == "critical"] if not prediction_df.empty else prediction_df
     high_risk_count = len(high_risk_df)
@@ -5042,56 +5087,124 @@ def render_sla_config_page():
 
     st.divider()
 
+    written_alerts_today = []
+    if prediction_config.get("enable_notifications", True) and (critical_risk_count > 0 or high_risk_count > 0):
+        existing_alerts = load_alerts()
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        thresholds_map = load_thresholds()
+        for _, svc in pd.concat([critical_risk_df, high_risk_df]).drop_duplicates("service_name").iterrows():
+            sname = svc["service_name"]
+            stype = svc["service_type"]
+            is_critical = svc["risk_level"] == "critical"
+            already_exists = False
+            if not existing_alerts.empty:
+                same_day = existing_alerts[
+                    (existing_alerts["service_name"] == sname) &
+                    (existing_alerts["alert_time"].str.startswith(today_str)) &
+                    (existing_alerts["status"] == "未处理")
+                ]
+                if not same_day.empty:
+                    already_exists = True
+            if not already_exists:
+                th_config = thresholds_map.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+                warning_th = float(th_config.get("warning_threshold", 200))
+                critical_th = float(th_config.get("critical_threshold", 500))
+                alert_level = "异常" if is_critical else "警告"
+                notify_person = th_config.get("critical_notify_person", "技术主管") if is_critical else th_config.get("warning_notify_person", "运维工程师")
+                next_upgrade_time = ""
+                try:
+                    temp_row = pd.Series({
+                        "service_type": stype,
+                        "alert_level": alert_level,
+                        "current_level": alert_level,
+                        "last_upgrade_time": ""
+                    })
+                    next_upgrade_time = compute_next_upgrade_time(temp_row, thresholds_map)
+                except Exception:
+                    pass
+                initial_history = json.dumps([{
+                    "level": alert_level,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "notify_person": notify_person,
+                    "action": "SLA 违规预测告警创建"
+                }], ensure_ascii=False)
+                alert_data = {
+                    "alert_id": generate_alert_id(),
+                    "service_name": sname,
+                    "service_type": stype,
+                    "alert_level": alert_level,
+                    "alert_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "response_time": float(svc["predicted_rt_avg"]),
+                    "warning_threshold": warning_th,
+                    "critical_threshold": critical_th,
+                    "status": "未处理",
+                    "resolved_time": "",
+                    "original_level": alert_level,
+                    "current_level": alert_level,
+                    "upgrade_count": "0",
+                    "last_upgrade_time": "",
+                    "next_upgrade_time": next_upgrade_time,
+                    "upgrade_history": initial_history,
+                    "notify_person": notify_person,
+                    "current_notify_level": "1"
+                }
+                save_alert(alert_data)
+                written_alerts_today.append(f"{sname}({alert_level})")
+
     if prediction_config.get("enable_notifications", True) and critical_risk_count > 0:
         critical_names = "、".join(critical_risk_df["service_name"].tolist())
+        extra_msg = f" 已自动写入告警记录：{', '.join(written_alerts_today)}。" if written_alerts_today else ""
         st.error(
             f"🚨 **SLA 违规预警通知**：检测到 {critical_risk_count} 个严重风险服务 "
-            f"（违规概率≥80%）：{critical_names}。建议立即处理！",
+            f"（违规概率≥80%）：{critical_names}。建议立即处理！{extra_msg}",
             icon="🚨"
         )
     elif prediction_config.get("enable_notifications", True) and high_risk_count > 0:
         high_risk_names = "、".join(high_risk_df["service_name"].tolist())
+        extra_msg = f" 已自动写入告警记录：{', '.join(written_alerts_today)}。" if written_alerts_today else ""
         st.warning(
             f"⚠️ **SLA 违规预警通知**：检测到 {high_risk_count} 个高风险服务 "
-            f"（违规概率≥{prediction_config.get('violation_warning_threshold', 60)}%）：{high_risk_names}。",
+            f"（违规概率≥{effective_warning_threshold}%）：{high_risk_names}。{extra_msg}",
             icon="⚠️"
         )
 
-    st.subheader(f"🔔 SLA 违规风险预警（未来 {prediction_config.get('prediction_hours', 24)} 小时）")
+    st.subheader(f"🔔 SLA 违规风险预警（未来 {new_prediction_hours} 小时）")
 
     if prediction_df.empty:
         st.info("暂无预测数据")
     else:
-        warning_threshold = float(prediction_config.get("violation_warning_threshold", 60.0))
+        display_warning_threshold = effective_warning_threshold
         display_pred_df = prediction_df.copy()
 
-        def get_risk_badge(risk_level, prob):
+        def get_risk_label(risk_level):
             if risk_level == "critical":
-                return f"🚨 严重 ({prob}%)"
+                return "🚨 严重"
             elif risk_level == "high":
-                return f"⚠️ 高风险 ({prob}%)"
+                return "⚠️ 高风险"
             elif risk_level == "medium":
-                return f"🟡 中风险 ({prob}%)"
+                return "🟡 中风险"
             else:
-                return f"✅ 低风险 ({prob}%)"
+                return "✅ 低风险"
 
-        display_pred_df["风险等级"] = display_pred_df.apply(
-            lambda r: get_risk_badge(r["risk_level"], r["violation_probability"]), axis=1
-        )
+        display_pred_df["风险等级"] = display_pred_df["risk_level"].apply(get_risk_label)
+        display_pred_df["违规概率(%)"] = display_pred_df["violation_probability"].apply(lambda x: f"{x}%")
         display_pred_df["预测响应时间(ms)"] = display_pred_df.apply(
             lambda r: f"{r['predicted_rt_avg']} (峰值 {r['predicted_rt_max']})", axis=1
         )
         display_pred_df["当前/SLA阈值(ms)"] = display_pred_df.apply(
             lambda r: f"{r['current_rt']} / {r['sla_threshold']}", axis=1
         )
+        display_pred_df["连续达标天数"] = display_pred_df["consecutive_achieved_days"].apply(
+            lambda x: f"{x} 天" if x > 0 else "未达标"
+        )
 
         display_df = display_pred_df[[
             "service_name", "service_type", "当前/SLA阈值(ms)",
-            "预测响应时间(ms)", "风险等级"
+            "预测响应时间(ms)", "违规概率(%)", "连续达标天数", "风险等级"
         ]].copy()
         display_df.columns = [
             "服务名称", "服务类型", "当前/SLA阈值(ms)",
-            "预测响应时间(ms)", "风险等级"
+            "预测响应时间(ms)", "违规概率(%)", "连续达标天数", "风险等级"
         ]
 
         def color_risk(val):
@@ -5104,8 +5217,23 @@ def render_sla_config_page():
             else:
                 return "background-color: #D1FAE5; color: #065F46;"
 
+        def color_prob(val):
+            try:
+                p = float(str(val).replace('%', ''))
+                if p >= 80:
+                    return "background-color: #7F1D1D; color: #FFFFFF; font-weight: bold;"
+                elif p >= display_warning_threshold:
+                    return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"
+                elif p >= 40:
+                    return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+                else:
+                    return "background-color: #D1FAE5; color: #065F46;"
+            except Exception:
+                return ""
+
         styled_pred = display_df.style.applymap(color_risk, subset=["风险等级"])
-        st.dataframe(styled_pred, use_container_width=True, hide_index=True, height=300)
+        styled_pred = styled_pred.applymap(color_prob, subset=["违规概率(%)"])
+        st.dataframe(styled_pred, use_container_width=True, hide_index=True, height=350)
 
         st.divider()
         st.subheader("📋 高风险服务详情与优化建议")
