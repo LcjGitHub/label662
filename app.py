@@ -69,26 +69,34 @@ os.makedirs(DATA_DIR, exist_ok=True)
 ALERT_COLUMNS = [
     "alert_id", "service_name", "service_type", "alert_level",
     "alert_time", "response_time", "warning_threshold",
-    "critical_threshold", "status", "resolved_time"
+    "critical_threshold", "status", "resolved_time",
+    "original_level", "current_level", "upgrade_count",
+    "last_upgrade_time", "next_upgrade_time", "upgrade_history",
+    "notify_person", "current_notify_level"
 ]
 
-THRESHOLD_COLUMNS = ["service_type", "warning_threshold", "critical_threshold"]
+THRESHOLD_COLUMNS = [
+    "service_type", "warning_threshold", "critical_threshold",
+    "warning_upgrade_minutes", "critical_upgrade_minutes",
+    "max_upgrade_level", "warning_notify_person", "critical_notify_person",
+    "escalation_notify_person"
+]
 
 SERVICE_STATUS_COLUMNS = ["service_name", "last_status", "last_check_time"]
 
 DEFAULT_THRESHOLDS = {
-    "网关服务": {"warning_threshold": 200, "critical_threshold": 500},
-    "认证服务": {"warning_threshold": 150, "critical_threshold": 300},
-    "数据库": {"warning_threshold": 100, "critical_threshold": 300},
-    "缓存服务": {"warning_threshold": 20, "critical_threshold": 50},
-    "存储服务": {"warning_threshold": 300, "critical_threshold": 800},
-    "消息服务": {"warning_threshold": 100, "critical_threshold": 300},
-    "搜索服务": {"warning_threshold": 300, "critical_threshold": 600},
-    "支付服务": {"warning_threshold": 500, "critical_threshold": 1000},
-    "通知服务": {"warning_threshold": 400, "critical_threshold": 800},
-    "网络服务": {"warning_threshold": 50, "critical_threshold": 150},
-    "监控服务": {"warning_threshold": 200, "critical_threshold": 500},
-    "AI 服务": {"warning_threshold": 1000, "critical_threshold": 2000},
+    "网关服务": {"warning_threshold": 200, "critical_threshold": 500, "warning_upgrade_minutes": 30, "critical_upgrade_minutes": 15, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "认证服务": {"warning_threshold": 150, "critical_threshold": 300, "warning_upgrade_minutes": 20, "critical_upgrade_minutes": 10, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "数据库": {"warning_threshold": 100, "critical_threshold": 300, "warning_upgrade_minutes": 15, "critical_upgrade_minutes": 5, "max_upgrade_level": 3, "warning_notify_person": "DBA", "critical_notify_person": "数据库主管", "escalation_notify_person": "技术总监"},
+    "缓存服务": {"warning_threshold": 20, "critical_threshold": 50, "warning_upgrade_minutes": 20, "critical_upgrade_minutes": 10, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "存储服务": {"warning_threshold": 300, "critical_threshold": 800, "warning_upgrade_minutes": 45, "critical_upgrade_minutes": 20, "max_upgrade_level": 3, "warning_notify_person": "存储工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "消息服务": {"warning_threshold": 100, "critical_threshold": 300, "warning_upgrade_minutes": 30, "critical_upgrade_minutes": 15, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "搜索服务": {"warning_threshold": 300, "critical_threshold": 600, "warning_upgrade_minutes": 30, "critical_upgrade_minutes": 15, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "支付服务": {"warning_threshold": 500, "critical_threshold": 1000, "warning_upgrade_minutes": 10, "critical_upgrade_minutes": 5, "max_upgrade_level": 3, "warning_notify_person": "支付工程师", "critical_notify_person": "支付主管", "escalation_notify_person": "CTO"},
+    "通知服务": {"warning_threshold": 400, "critical_threshold": 800, "warning_upgrade_minutes": 60, "critical_upgrade_minutes": 30, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "网络服务": {"warning_threshold": 50, "critical_threshold": 150, "warning_upgrade_minutes": 15, "critical_upgrade_minutes": 5, "max_upgrade_level": 3, "warning_notify_person": "网络工程师", "critical_notify_person": "网络主管", "escalation_notify_person": "技术总监"},
+    "监控服务": {"warning_threshold": 200, "critical_threshold": 500, "warning_upgrade_minutes": 45, "critical_upgrade_minutes": 20, "max_upgrade_level": 3, "warning_notify_person": "运维工程师", "critical_notify_person": "技术主管", "escalation_notify_person": "技术总监"},
+    "AI 服务": {"warning_threshold": 1000, "critical_threshold": 2000, "warning_upgrade_minutes": 60, "critical_upgrade_minutes": 30, "max_upgrade_level": 3, "warning_notify_person": "AI工程师", "critical_notify_person": "AI主管", "escalation_notify_person": "技术总监"},
 }
 
 DEFAULT_SLA_CONFIG = {
@@ -166,7 +174,13 @@ def init_csv_files():
                 writer.writerow({
                     "service_type": stype,
                     "warning_threshold": thresholds["warning_threshold"],
-                    "critical_threshold": thresholds["critical_threshold"]
+                    "critical_threshold": thresholds["critical_threshold"],
+                    "warning_upgrade_minutes": thresholds.get("warning_upgrade_minutes", 30),
+                    "critical_upgrade_minutes": thresholds.get("critical_upgrade_minutes", 15),
+                    "max_upgrade_level": thresholds.get("max_upgrade_level", 3),
+                    "warning_notify_person": thresholds.get("warning_notify_person", "运维工程师"),
+                    "critical_notify_person": thresholds.get("critical_notify_person", "技术主管"),
+                    "escalation_notify_person": thresholds.get("escalation_notify_person", "技术总监")
                 })
 
     if not os.path.exists(SERVICE_STATUS_CSV):
@@ -194,14 +208,115 @@ def init_csv_files():
 init_csv_files()
 
 
+def migrate_csv_files():
+    if os.path.exists(THRESHOLDS_CSV):
+        try:
+            df = pd.read_csv(THRESHOLDS_CSV, encoding="utf-8-sig")
+            needs_migration = False
+            for col in THRESHOLD_COLUMNS:
+                if col not in df.columns:
+                    needs_migration = True
+                    defaults = DEFAULT_THRESHOLDS
+                    df[col] = df["service_type"].apply(
+                        lambda x: defaults.get(x, {}).get(col, 
+                            30 if col == "warning_upgrade_minutes" else
+                            15 if col == "critical_upgrade_minutes" else
+                            3 if col == "max_upgrade_level" else
+                            "运维工程师" if col == "warning_notify_person" else
+                            "技术主管" if col == "critical_notify_person" else
+                            "技术总监" if col == "escalation_notify_person" else ""
+                        )
+                    )
+            if needs_migration:
+                df = df[THRESHOLD_COLUMNS]
+                df.to_csv(THRESHOLDS_CSV, index=False, encoding="utf-8-sig")
+        except Exception:
+            pass
+
+    if os.path.exists(ALERTS_CSV):
+        try:
+            df = pd.read_csv(ALERTS_CSV, encoding="utf-8-sig", keep_default_na=False)
+            needs_migration = False
+            for col in ALERT_COLUMNS:
+                if col not in df.columns:
+                    needs_migration = True
+                    if col == "original_level":
+                        df[col] = df.get("alert_level", "")
+                    elif col == "current_level":
+                        df[col] = df.get("alert_level", "")
+                    elif col == "upgrade_count":
+                        df[col] = "0"
+                    elif col == "last_upgrade_time":
+                        df[col] = ""
+                    elif col == "next_upgrade_time":
+                        def compute_next(row):
+                            try:
+                                thresholds = load_thresholds()
+                                stype = row.get("service_type", "")
+                                level = row.get("alert_level", "警告")
+                                th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+                                upgrade_minutes = th_config.get("warning_upgrade_minutes", 30) if level == "警告" else th_config.get("critical_upgrade_minutes", 15)
+                                alert_time_str = row.get("alert_time", "")
+                                if alert_time_str:
+                                    alert_time = datetime.strptime(alert_time_str, "%Y-%m-%d %H:%M:%S")
+                                    return (alert_time + timedelta(minutes=upgrade_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                            except Exception:
+                                pass
+                            return ""
+                        df[col] = df.apply(compute_next, axis=1)
+                    elif col == "upgrade_history":
+                        def make_history(row):
+                            try:
+                                level = row.get("alert_level", "警告")
+                                time = row.get("alert_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                                thresholds = load_thresholds()
+                                stype = row.get("service_type", "")
+                                th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+                                notify = th_config.get("warning_notify_person", "运维工程师") if level == "警告" else th_config.get("critical_notify_person", "技术主管")
+                                return json.dumps([{"level": level, "time": time, "notify_person": notify, "action": "告警创建"}], ensure_ascii=False)
+                            except Exception:
+                                return "[]"
+                        df[col] = df.apply(make_history, axis=1)
+                    elif col == "notify_person":
+                        def get_notify(row):
+                            try:
+                                level = row.get("alert_level", "警告")
+                                thresholds = load_thresholds()
+                                stype = row.get("service_type", "")
+                                th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+                                return th_config.get("warning_notify_person", "运维工程师") if level == "警告" else th_config.get("critical_notify_person", "技术主管")
+                            except Exception:
+                                return "运维工程师"
+                        df[col] = df.apply(get_notify, axis=1)
+                    elif col == "current_notify_level":
+                        df[col] = "1"
+                    else:
+                        df[col] = ""
+            if needs_migration:
+                df = df[ALERT_COLUMNS]
+                df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
+        except Exception:
+            pass
+
+
+migrate_csv_files()
+
+
 def load_thresholds():
     if os.path.exists(THRESHOLDS_CSV):
         df = pd.read_csv(THRESHOLDS_CSV, encoding="utf-8-sig")
         thresholds = {}
         for _, row in df.iterrows():
+            defaults = DEFAULT_THRESHOLDS.get(row["service_type"], {})
             thresholds[row["service_type"]] = {
                 "warning_threshold": float(row["warning_threshold"]),
-                "critical_threshold": float(row["critical_threshold"])
+                "critical_threshold": float(row["critical_threshold"]),
+                "warning_upgrade_minutes": int(row.get("warning_upgrade_minutes", defaults.get("warning_upgrade_minutes", 30))),
+                "critical_upgrade_minutes": int(row.get("critical_upgrade_minutes", defaults.get("critical_upgrade_minutes", 15))),
+                "max_upgrade_level": int(row.get("max_upgrade_level", defaults.get("max_upgrade_level", 3))),
+                "warning_notify_person": str(row.get("warning_notify_person", defaults.get("warning_notify_person", "运维工程师"))),
+                "critical_notify_person": str(row.get("critical_notify_person", defaults.get("critical_notify_person", "技术主管"))),
+                "escalation_notify_person": str(row.get("escalation_notify_person", defaults.get("escalation_notify_person", "技术总监")))
             }
         return thresholds
     return DEFAULT_THRESHOLDS.copy()
@@ -212,10 +327,17 @@ def save_thresholds(thresholds):
         writer = csv.DictWriter(f, fieldnames=THRESHOLD_COLUMNS)
         writer.writeheader()
         for stype, th in thresholds.items():
+            defaults = DEFAULT_THRESHOLDS.get(stype, {})
             writer.writerow({
                 "service_type": stype,
                 "warning_threshold": th["warning_threshold"],
-                "critical_threshold": th["critical_threshold"]
+                "critical_threshold": th["critical_threshold"],
+                "warning_upgrade_minutes": th.get("warning_upgrade_minutes", defaults.get("warning_upgrade_minutes", 30)),
+                "critical_upgrade_minutes": th.get("critical_upgrade_minutes", defaults.get("critical_upgrade_minutes", 15)),
+                "max_upgrade_level": th.get("max_upgrade_level", defaults.get("max_upgrade_level", 3)),
+                "warning_notify_person": th.get("warning_notify_person", defaults.get("warning_notify_person", "运维工程师")),
+                "critical_notify_person": th.get("critical_notify_person", defaults.get("critical_notify_person", "技术主管")),
+                "escalation_notify_person": th.get("escalation_notify_person", defaults.get("escalation_notify_person", "技术总监"))
             })
 
 
@@ -225,12 +347,19 @@ def load_alerts():
             "alert_id": str, "service_name": str, "service_type": str,
             "alert_level": str, "alert_time": str, "response_time": float,
             "warning_threshold": float, "critical_threshold": float,
-            "status": str, "resolved_time": str
+            "status": str, "resolved_time": str,
+            "original_level": str, "current_level": str,
+            "upgrade_count": str, "last_upgrade_time": str,
+            "next_upgrade_time": str, "upgrade_history": str,
+            "notify_person": str, "current_notify_level": str
         }
         df = pd.read_csv(ALERTS_CSV, encoding="utf-8-sig", dtype=dtype_map, keep_default_na=False)
         if df.empty:
             return pd.DataFrame(columns=ALERT_COLUMNS)
-        return df
+        for col in ALERT_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+        return df[ALERT_COLUMNS]
     return pd.DataFrame(columns=ALERT_COLUMNS)
 
 
@@ -260,6 +389,170 @@ def batch_resolve_alerts(alert_ids):
         df.loc[mask, "status"] = "已处理"
         df.loc[mask, "resolved_time"] = now_str
         df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
+
+
+def get_upgrade_level_sequence():
+    return ["警告", "异常", "严重", "紧急"]
+
+
+def get_notify_level_sequence():
+    return ["运维工程师", "技术主管", "技术总监", "CTO"]
+
+
+def compute_next_upgrade_time(alert_row, thresholds):
+    stype = alert_row["service_type"]
+    current_level = alert_row.get("current_level", alert_row["alert_level"])
+    th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+
+    if current_level == "警告":
+        upgrade_minutes = th_config.get("warning_upgrade_minutes", 30)
+    elif current_level == "异常":
+        upgrade_minutes = th_config.get("critical_upgrade_minutes", 15)
+    else:
+        upgrade_minutes = th_config.get("critical_upgrade_minutes", 15) // 2
+
+    last_upgrade = alert_row.get("last_upgrade_time", "")
+    if last_upgrade:
+        base_time = datetime.strptime(last_upgrade, "%Y-%m-%d %H:%M:%S")
+    else:
+        base_time = datetime.strptime(alert_row["alert_time"], "%Y-%m-%d %H:%M:%S")
+
+    return (base_time + timedelta(minutes=upgrade_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def check_and_upgrade_alerts(thresholds=None):
+    if thresholds is None:
+        thresholds = load_thresholds()
+
+    df = load_alerts()
+    if df.empty:
+        return []
+
+    upgraded_alerts = []
+    now = datetime.now()
+    level_sequence = get_upgrade_level_sequence()
+
+    for idx, row in df.iterrows():
+        if row["status"] != "未处理":
+            continue
+
+        next_upgrade_str = row.get("next_upgrade_time", "")
+        if not next_upgrade_str:
+            continue
+
+        try:
+            next_upgrade_time = datetime.strptime(next_upgrade_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+
+        if now < next_upgrade_time:
+            continue
+
+        stype = row["service_type"]
+        th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+        max_upgrade_level = int(th_config.get("max_upgrade_level", 3))
+        current_upgrade_count = int(row.get("upgrade_count", "0") or 0)
+
+        if current_upgrade_count >= max_upgrade_level:
+            continue
+
+        current_level = row.get("current_level", row["alert_level"])
+        try:
+            current_level_idx = level_sequence.index(current_level)
+        except ValueError:
+            current_level_idx = 0
+
+        if current_level_idx >= len(level_sequence) - 1:
+            continue
+
+        new_level = level_sequence[current_level_idx + 1]
+        new_notify_level = current_upgrade_count + 2
+        notify_sequence = get_notify_level_sequence()
+        new_notify_person = notify_sequence[min(new_notify_level - 1, len(notify_sequence) - 1)]
+        if new_level == "严重" or new_level == "紧急":
+            new_notify_person = th_config.get("escalation_notify_person", "技术总监")
+
+        upgrade_count = current_upgrade_count + 1
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            history = json.loads(row.get("upgrade_history", "[]")) if row.get("upgrade_history", "") else []
+        except json.JSONDecodeError:
+            history = []
+
+        history.append({
+            "level": new_level,
+            "time": now_str,
+            "notify_person": new_notify_person,
+            "action": f"告警升级（从{current_level}升级到{new_level}）",
+            "upgrade_count": upgrade_count
+        })
+
+        df.at[idx, "current_level"] = new_level
+        df.at[idx, "alert_level"] = new_level
+        df.at[idx, "upgrade_count"] = str(upgrade_count)
+        df.at[idx, "last_upgrade_time"] = now_str
+        df.at[idx, "notify_person"] = new_notify_person
+        df.at[idx, "current_notify_level"] = str(new_notify_level)
+        df.at[idx, "upgrade_history"] = json.dumps(history, ensure_ascii=False)
+
+        temp_row = df.iloc[idx].copy()
+        temp_row["next_upgrade_time"] = compute_next_upgrade_time(temp_row, thresholds)
+        df.at[idx, "next_upgrade_time"] = temp_row["next_upgrade_time"]
+
+        upgraded_alerts.append({
+            "alert_id": row["alert_id"],
+            "service_name": row["service_name"],
+            "old_level": current_level,
+            "new_level": new_level,
+            "notify_person": new_notify_person,
+            "upgrade_time": now_str
+        })
+
+    if upgraded_alerts:
+        df.to_csv(ALERTS_CSV, index=False, encoding="utf-8-sig")
+
+    return upgraded_alerts
+
+
+def get_remaining_upgrade_time(alert_row):
+    next_upgrade_str = alert_row.get("next_upgrade_time", "")
+    if not next_upgrade_str:
+        return None, "已达最高升级级别"
+
+    try:
+        next_upgrade_time = datetime.strptime(next_upgrade_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None, "时间格式错误"
+
+    now = datetime.now()
+    remaining = next_upgrade_time - now
+
+    if remaining.total_seconds() <= 0:
+        return 0, "即将升级"
+
+    total_seconds = int(remaining.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    if hours > 0:
+        time_str = f"{hours}小时{minutes}分钟"
+    elif minutes > 0:
+        time_str = f"{minutes}分钟{seconds}秒"
+    else:
+        time_str = f"{seconds}秒"
+
+    return total_seconds, time_str
+
+
+def parse_upgrade_history(history_str):
+    if not history_str:
+        return []
+    try:
+        return json.loads(history_str)
+    except json.JSONDecodeError:
+        return []
 
 
 def load_service_status():
@@ -896,6 +1189,18 @@ def detect_and_record_alerts(services_df, thresholds):
 
         if last_status == "正常" and current_status in ["警告", "异常"]:
             alert_level = "警告" if current_status == "警告" else "异常"
+            th_config = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
+            upgrade_minutes = th_config.get("warning_upgrade_minutes", 30) if alert_level == "警告" else th_config.get("critical_upgrade_minutes", 15)
+            next_upgrade_time = (datetime.now() + timedelta(minutes=upgrade_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+            notify_person = th_config.get("warning_notify_person", "运维工程师") if alert_level == "警告" else th_config.get("critical_notify_person", "技术主管")
+
+            initial_history = json.dumps([{
+                "level": alert_level,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "notify_person": notify_person,
+                "action": "告警创建"
+            }], ensure_ascii=False)
+
             alert_data = {
                 "alert_id": generate_alert_id(),
                 "service_name": sname,
@@ -906,7 +1211,15 @@ def detect_and_record_alerts(services_df, thresholds):
                 "warning_threshold": warning_th,
                 "critical_threshold": critical_th,
                 "status": "未处理",
-                "resolved_time": ""
+                "resolved_time": "",
+                "original_level": alert_level,
+                "current_level": alert_level,
+                "upgrade_count": "0",
+                "last_upgrade_time": "",
+                "next_upgrade_time": next_upgrade_time,
+                "upgrade_history": initial_history,
+                "notify_person": notify_person,
+                "current_notify_level": "1"
             }
             new_alerts.append(alert_data)
             save_alert(alert_data)
@@ -923,11 +1236,39 @@ def color_status(val):
         return "background-color: #FEF3C7; color: #92400E"
     elif val == "异常":
         return "background-color: #FEE2E2; color: #991B1B"
+    elif val == "严重":
+        return "background-color: #FECACA; color: #7F1D1D; font-weight: bold"
+    elif val == "紧急":
+        return "background-color: #7F1D1D; color: #FFFFFF; font-weight: bold"
     elif val == "已处理":
         return "background-color: #DBEAFE; color: #1E40AF"
     elif val == "未处理":
         return "background-color: #FEE2E2; color: #991B1B"
     return ""
+
+
+def get_alert_level_color(level):
+    if level == "警告":
+        return "#F59E0B"
+    elif level == "异常":
+        return "#EF4444"
+    elif level == "严重":
+        return "#DC2626"
+    elif level == "紧急":
+        return "#7F1D1D"
+    return "#6B7280"
+
+
+def get_alert_level_emoji(level):
+    if level == "警告":
+        return "⚠️"
+    elif level == "异常":
+        return "🚨"
+    elif level == "严重":
+        return "🔥"
+    elif level == "紧急":
+        return "💥"
+    return "ℹ️"
 
 
 def get_unresolved_alert_count():
@@ -1155,6 +1496,10 @@ def render_dashboard_page():
     instance_cost = load_instance_cost()
 
     detect_and_record_alerts(df, thresholds)
+    upgraded_results = check_and_upgrade_alerts(thresholds)
+    if upgraded_results:
+        for up in upgraded_results:
+            st.warning(f"🔔 告警自动升级：{up['service_name']} 从【{up['old_level']}】升级为【{up['new_level']}】，已通知：{up['notify_person']}")
 
     capacity_df = compute_capacity_analysis(df, thresholds, capacity_config, instance_cost)
     cap_summary = get_capacity_warning_summary(capacity_df, capacity_config)
@@ -1239,10 +1584,10 @@ def render_dashboard_page():
 
         st.divider()
 
-        st.subheader("⚙️ 告警阈值设置")
+        st.subheader("⚙️ 告警阈值与升级设置")
         all_service_types = sorted(df_with_status["service_type"].unique().tolist())
         for stype in all_service_types:
-            current = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+            current = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
             with st.expander(f"{stype}", expanded=False):
                 col_w, col_c = st.columns(2)
                 with col_w:
@@ -1250,7 +1595,7 @@ def render_dashboard_page():
                         "警告阈值 (ms)",
                         min_value=1,
                         max_value=10000,
-                        value=int(current["warning_threshold"]),
+                        value=int(current.get("warning_threshold", 100)),
                         key=f"warn_{stype}"
                     )
                 with col_c:
@@ -1258,19 +1603,76 @@ def render_dashboard_page():
                         "异常阈值 (ms)",
                         min_value=1,
                         max_value=10000,
-                        value=int(current["critical_threshold"]),
+                        value=int(current.get("critical_threshold", 500)),
                         key=f"crit_{stype}"
                     )
                 if new_warning >= new_critical:
                     st.warning("⚠️ 警告阈值应小于异常阈值")
+
+                st.markdown("**⏰ 升级时间配置**")
+                col_uw, col_uc = st.columns(2)
+                with col_uw:
+                    new_warn_upgrade = st.number_input(
+                        "警告级升级(分钟)",
+                        min_value=1,
+                        max_value=1440,
+                        value=int(current.get("warning_upgrade_minutes", 30)),
+                        help="警告级别告警多久未处理后自动升级",
+                        key=f"warn_up_{stype}"
+                    )
+                with col_uc:
+                    new_crit_upgrade = st.number_input(
+                        "异常级升级(分钟)",
+                        min_value=1,
+                        max_value=1440,
+                        value=int(current.get("critical_upgrade_minutes", 15)),
+                        help="异常级别告警多久未处理后自动升级",
+                        key=f"crit_up_{stype}"
+                    )
+
+                col_max_up, _ = st.columns(2)
+                with col_max_up:
+                    new_max_upgrade = st.number_input(
+                        "最大升级次数",
+                        min_value=1,
+                        max_value=5,
+                        value=int(current.get("max_upgrade_level", 3)),
+                        help="告警最多可升级的次数",
+                        key=f"max_up_{stype}"
+                    )
+
+                st.markdown("**👥 通知人员配置**")
+                new_warn_notify = st.text_input(
+                    "警告级通知人",
+                    value=str(current.get("warning_notify_person", "运维工程师")),
+                    key=f"warn_notify_{stype}"
+                )
+                new_crit_notify = st.text_input(
+                    "异常级通知人",
+                    value=str(current.get("critical_notify_person", "技术主管")),
+                    key=f"crit_notify_{stype}"
+                )
+                new_esc_notify = st.text_input(
+                    "升级后通知人",
+                    value=str(current.get("escalation_notify_person", "技术总监")),
+                    help="告警升级后通知的更高级别人员",
+                    key=f"esc_notify_{stype}"
+                )
+
                 thresholds[stype] = {
                     "warning_threshold": new_warning,
-                    "critical_threshold": new_critical
+                    "critical_threshold": new_critical,
+                    "warning_upgrade_minutes": new_warn_upgrade,
+                    "critical_upgrade_minutes": new_crit_upgrade,
+                    "max_upgrade_level": new_max_upgrade,
+                    "warning_notify_person": new_warn_notify,
+                    "critical_notify_person": new_crit_notify,
+                    "escalation_notify_person": new_esc_notify
                 }
 
-        if st.button("💾 保存阈值设置", use_container_width=True, type="primary", key="save_th_dash"):
+        if st.button("💾 保存所有设置", use_container_width=True, type="primary", key="save_th_dash"):
             save_thresholds(thresholds)
-            st.success("✅ 阈值设置已保存！")
+            st.success("✅ 阈值与升级设置已保存！")
             st.cache_data.clear()
             st.rerun()
 
@@ -1668,11 +2070,21 @@ def render_dashboard_page():
 
 
 def render_alerts_page():
+    thresholds = load_thresholds()
+    upgraded_results = check_and_upgrade_alerts(thresholds)
+    if upgraded_results:
+        for up in upgraded_results:
+            st.warning(f"🔔 告警自动升级：{up['service_name']} 从【{up['old_level']}】升级为【{up['new_level']}】，已通知：{up['notify_person']}")
+
+    if "selected_alert_detail" not in st.session_state:
+        st.session_state["selected_alert_detail"] = None
+
     with st.sidebar:
         st.header("🔔 告警管理")
 
         if st.button("← 返回监控首页", use_container_width=True):
             st.session_state["page"] = "dashboard"
+            st.session_state["selected_alert_detail"] = None
             st.rerun()
 
         if st.button("📈 性能趋势分析", use_container_width=True, type="secondary", key="alt_sidebar_trend_btn"):
@@ -1697,8 +2109,9 @@ def render_alerts_page():
         if not alerts_df_raw.empty:
             all_services += sorted(alerts_df_raw["service_name"].unique().tolist())
 
-        alert_levels = ["全部", "警告", "异常"]
+        alert_levels = ["全部", "警告", "异常", "严重", "紧急"]
         alert_statuses = ["全部", "未处理", "已处理"]
+        upgrade_filters = ["全部", "已升级", "未升级"]
 
         selected_level = st.selectbox(
             "告警级别",
@@ -1710,6 +2123,12 @@ def render_alerts_page():
             "告警状态",
             alert_statuses,
             help="按处理状态筛选"
+        )
+
+        selected_upgrade = st.selectbox(
+            "升级状态",
+            upgrade_filters,
+            help="按告警升级状态筛选"
         )
 
         selected_service = st.selectbox(
@@ -1734,12 +2153,11 @@ def render_alerts_page():
             )
 
         st.divider()
-        st.subheader("⚙️ 告警阈值设置")
-        thresholds = load_thresholds()
+        st.subheader("⚙️ 告警阈值与升级设置")
         df = generate_mock_data()
         all_service_types = sorted(df["service_type"].unique().tolist())
         for stype in all_service_types:
-            current = thresholds.get(stype, {"warning_threshold": 100, "critical_threshold": 500})
+            current = thresholds.get(stype, DEFAULT_THRESHOLDS.get(stype, {}))
             with st.expander(f"{stype}", expanded=False):
                 col_w, col_c = st.columns(2)
                 with col_w:
@@ -1747,7 +2165,7 @@ def render_alerts_page():
                         "警告阈值 (ms)",
                         min_value=1,
                         max_value=10000,
-                        value=int(current["warning_threshold"]),
+                        value=int(current.get("warning_threshold", 100)),
                         key=f"alt_warn_{stype}"
                     )
                 with col_c:
@@ -1755,26 +2173,83 @@ def render_alerts_page():
                         "异常阈值 (ms)",
                         min_value=1,
                         max_value=10000,
-                        value=int(current["critical_threshold"]),
+                        value=int(current.get("critical_threshold", 500)),
                         key=f"alt_crit_{stype}"
                     )
                 if new_warning >= new_critical:
                     st.warning("⚠️ 警告阈值应小于异常阈值")
+
+                st.markdown("**⏰ 升级时间配置**")
+                col_uw, col_uc = st.columns(2)
+                with col_uw:
+                    new_warn_upgrade = st.number_input(
+                        "警告级升级(分钟)",
+                        min_value=1,
+                        max_value=1440,
+                        value=int(current.get("warning_upgrade_minutes", 30)),
+                        help="警告级别告警多久未处理后自动升级",
+                        key=f"alt_warn_up_{stype}"
+                    )
+                with col_uc:
+                    new_crit_upgrade = st.number_input(
+                        "异常级升级(分钟)",
+                        min_value=1,
+                        max_value=1440,
+                        value=int(current.get("critical_upgrade_minutes", 15)),
+                        help="异常级别告警多久未处理后自动升级",
+                        key=f"alt_crit_up_{stype}"
+                    )
+
+                col_max_up, _ = st.columns(2)
+                with col_max_up:
+                    new_max_upgrade = st.number_input(
+                        "最大升级次数",
+                        min_value=1,
+                        max_value=5,
+                        value=int(current.get("max_upgrade_level", 3)),
+                        help="告警最多可升级的次数",
+                        key=f"alt_max_up_{stype}"
+                    )
+
+                st.markdown("**👥 通知人员配置**")
+                new_warn_notify = st.text_input(
+                    "警告级通知人",
+                    value=str(current.get("warning_notify_person", "运维工程师")),
+                    key=f"alt_warn_notify_{stype}"
+                )
+                new_crit_notify = st.text_input(
+                    "异常级通知人",
+                    value=str(current.get("critical_notify_person", "技术主管")),
+                    key=f"alt_crit_notify_{stype}"
+                )
+                new_esc_notify = st.text_input(
+                    "升级后通知人",
+                    value=str(current.get("escalation_notify_person", "技术总监")),
+                    help="告警升级后通知的更高级别人员",
+                    key=f"alt_esc_notify_{stype}"
+                )
+
                 thresholds[stype] = {
                     "warning_threshold": new_warning,
-                    "critical_threshold": new_critical
+                    "critical_threshold": new_critical,
+                    "warning_upgrade_minutes": new_warn_upgrade,
+                    "critical_upgrade_minutes": new_crit_upgrade,
+                    "max_upgrade_level": new_max_upgrade,
+                    "warning_notify_person": new_warn_notify,
+                    "critical_notify_person": new_crit_notify,
+                    "escalation_notify_person": new_esc_notify
                 }
 
-        if st.button("💾 保存阈值设置", use_container_width=True, type="primary", key="save_th_alert"):
+        if st.button("💾 保存设置", use_container_width=True, type="primary", key="save_th_alert"):
             save_thresholds(thresholds)
-            st.success("✅ 阈值设置已保存！")
+            st.success("✅ 阈值与升级设置已保存！")
             st.rerun()
 
         st.divider()
         st.caption(f"📊 数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     st.title("🔔 告警历史记录")
-    st.markdown("查看所有历史告警记录，支持多条件筛选和批量处理")
+    st.markdown("查看所有历史告警记录，支持多条件筛选、批量处理和告警升级自动追踪")
     st.divider()
 
     alerts_df = load_alerts()
@@ -1791,17 +2266,24 @@ def render_alerts_page():
         if selected_alert_status != "全部":
             alerts_df = alerts_df[alerts_df["status"] == selected_alert_status]
 
+        if selected_upgrade != "全部":
+            if selected_upgrade == "已升级":
+                alerts_df = alerts_df[alerts_df["upgrade_count"].apply(lambda x: int(x) > 0 if x else False)]
+            else:
+                alerts_df = alerts_df[alerts_df["upgrade_count"].apply(lambda x: int(x) == 0 if x else True)]
+
         if selected_service != "全部":
             alerts_df = alerts_df[alerts_df["service_name"] == selected_service]
 
         alerts_df = alerts_df.drop(columns=["alert_time_dt"])
 
-    col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+    col_stats1, col_stats2, col_stats3, col_stats4, col_stats5 = st.columns(5)
 
     total_alerts = len(alerts_df) if not alerts_df.empty else 0
     unresolved = len(alerts_df[alerts_df["status"] == "未处理"]) if not alerts_df.empty else 0
     warning_count = len(alerts_df[alerts_df["alert_level"] == "警告"]) if not alerts_df.empty else 0
-    critical_count = len(alerts_df[alerts_df["alert_level"] == "异常"]) if not alerts_df.empty else 0
+    critical_count = len(alerts_df[alerts_df["alert_level"].isin(["异常", "严重", "紧急"])]) if not alerts_df.empty else 0
+    upgraded_count = len(alerts_df[alerts_df["upgrade_count"].apply(lambda x: int(x) > 0 if x else False)]) if not alerts_df.empty else 0
 
     with col_stats1:
         st.metric(label="📋 总告警数", value=f"{total_alerts} 条", help="筛选条件下的告警总数")
@@ -1811,10 +2293,14 @@ def render_alerts_page():
                   help="尚未处理的告警数量")
 
     with col_stats3:
-        st.metric(label="⚠️ 警告级别", value=f"{warning_count} 条", help="响应时间超过警告阈值的告警")
+        st.metric(label="⚠️ 警告级别", value=f"{warning_count} 条", help="警告级别的告警数量")
 
     with col_stats4:
-        st.metric(label="🚨 异常级别", value=f"{critical_count} 条", help="响应时间超过异常阈值的告警")
+        st.metric(label="🚨 异常+严重+紧急", value=f"{critical_count} 条", help="异常、严重、紧急级别的告警总数")
+
+    with col_stats5:
+        st.metric(label="⬆️ 已升级告警", value=f"{upgraded_count} 条", delta=f"{upgraded_count}", delta_color="inverse",
+                  help="已自动升级过的告警数量")
 
     st.divider()
 
@@ -1840,91 +2326,261 @@ def render_alerts_page():
         display_alerts = alerts_df.copy()
         display_alerts = display_alerts.sort_values("alert_time", ascending=False)
 
-        for idx, row in display_alerts.iterrows():
-            is_critical = row["alert_level"] == "异常"
-            is_unresolved = row["status"] == "未处理"
+        col_main, col_detail = st.columns([3, 2])
 
-            border_color = "#EF4444" if is_critical else "#F59E0B"
-            bg_color = "#FEF2F2" if (is_critical and is_unresolved) else ("#FFFBEB" if is_unresolved else "#F9FAFB")
+        with col_main:
+            for idx, row in display_alerts.iterrows():
+                current_level = row.get("current_level", row["alert_level"])
+                is_critical = current_level in ["异常", "严重", "紧急"]
+                is_unresolved = row["status"] == "未处理"
+                upgrade_count = int(row.get("upgrade_count", "0") or 0)
+                original_level = row.get("original_level", row["alert_level"])
+                notify_person = row.get("notify_person", "")
 
-            with st.container():
-                st.markdown(f"""
-                <div style="
-                    padding: 16px 20px;
-                    border-radius: 8px;
-                    border-left: 4px solid {border_color};
-                    background-color: {bg_color};
-                    margin-bottom: 12px;
-                ">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                        <div>
-                            <div style="font-size: 16px; font-weight: 600; margin-bottom: 6px;">
-                                {'🚨' if is_critical else '⚠️'} {row['service_name']}
-                                <span style="
-                                    margin-left: 8px;
-                                    padding: 2px 8px;
-                                    border-radius: 4px;
-                                    font-size: 12px;
-                                    background-color: {'#EF4444' if is_critical else '#F59E0B'};
-                                    color: white;
-                                ">{row['alert_level']}</span>
-                                <span style="
-                                    margin-left: 8px;
-                                    padding: 2px 8px;
-                                    border-radius: 4px;
-                                    font-size: 12px;
-                                    background-color: {'#EF4444' if is_unresolved else '#10B981'};
-                                    color: white;
-                                ">{row['status']}</span>
+                border_color = get_alert_level_color(current_level)
+                if is_unresolved and upgrade_count > 0:
+                    bg_color = "#FEE2E2"
+                elif is_unresolved:
+                    bg_color = "#FFFBEB"
+                else:
+                    bg_color = "#F9FAFB"
+
+                level_emoji = get_alert_level_emoji(current_level)
+                remaining_sec, remaining_str = get_remaining_upgrade_time(row)
+
+                upgrade_badges = ""
+                if upgrade_count > 0:
+                    upgrade_badges = f"""
+                                    <span style="
+                                        margin-left: 6px;
+                                        padding: 2px 10px;
+                                        border-radius: 12px;
+                                        font-size: 11px;
+                                        background-color: #7C3AED;
+                                        color: white;
+                                        font-weight: 600;
+                                    ">⬆️ 已升级 {upgrade_count} 次</span>
+                                    <span style="
+                                        margin-left: 4px;
+                                        font-size: 11px;
+                                        color: #7C3AED;
+                                    ">（初始：{original_level}）</span>
+                    """
+
+                resolved_time_html = ""
+                if str(row["resolved_time"]) != "":
+                    resolved_time_html = f'<span style="margin-right: 16px;">✅ 处理时间：{row["resolved_time"]}</span>'
+
+                notify_html = ""
+                if notify_person:
+                    notify_html = f'<span>👤 当前通知：<strong>{notify_person}</strong></span>'
+
+                remaining_html = ""
+                if is_unresolved:
+                    if remaining_sec is not None and remaining_sec > 0:
+                        urgency_color = "#EF4444" if remaining_sec < 300 else ("#F59E0B" if remaining_sec < 600 else "#6B7280")
+                        remaining_html = f"""
+                            <div style="font-size: 13px; margin-bottom: 8px;">
+                                ⏳ <strong style="color: {urgency_color};">距离下次升级：{remaining_str}</strong>
+                                &nbsp;&nbsp;📅 下次升级时间：{row.get('next_upgrade_time', '')}
                             </div>
-                            <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px;">
-                                <span style="margin-right: 16px;">🏷️ {row['service_type']}</span>
-                                <span style="margin-right: 16px;">⏰ {row['alert_time']}</span>
-                                {'<span>✅ 处理时间：' + str(row['resolved_time']) + '</span>' if str(row['resolved_time']) != '' else ''}
+                        """
+                    elif remaining_sec == 0:
+                        remaining_html = f"""
+                            <div style="font-size: 13px; margin-bottom: 8px;">
+                                🔴 <strong style="color: #EF4444;">升级倒计时已到，即将自动升级！</strong>
                             </div>
-                            <div style="font-size: 14px;">
-                                <span style="margin-right: 20px;">
-                                    响应时间：<strong style="color: {'#EF4444' if is_critical else '#F59E0B'};">{row['response_time']:.0f} ms</strong>
-                                </span>
-                                <span style="margin-right: 20px;">
-                                    警告阈值：<strong>{row['warning_threshold']:.0f} ms</strong>
-                                </span>
-                                <span>
-                                    异常阈值：<strong>{row['critical_threshold']:.0f} ms</strong>
-                                </span>
+                        """
+
+                with st.container():
+                    st.markdown(f"""
+                    <div style="
+                        padding: 16px 20px;
+                        border-radius: 8px;
+                        border-left: 5px solid {border_color};
+                        background-color: {bg_color};
+                        margin-bottom: 12px;
+                    ">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                            <div style="flex: 1;">
+                                <div style="font-size: 16px; font-weight: 600; margin-bottom: 6px;">
+                                    {level_emoji} {row['service_name']}
+                                    <span style="
+                                        margin-left: 8px;
+                                        padding: 2px 10px;
+                                        border-radius: 4px;
+                                        font-size: 12px;
+                                        background-color: {border_color};
+                                        color: white;
+                                        font-weight: 600;
+                                    ">{current_level}</span>
+                                    <span style="
+                                        margin-left: 6px;
+                                        padding: 2px 8px;
+                                        border-radius: 4px;
+                                        font-size: 12px;
+                                        background-color: {'#EF4444' if is_unresolved else '#10B981'};
+                                        color: white;
+                                    ">{row['status']}</span>
+                                    {upgrade_badges}
+                                </div>
                             </div>
                         </div>
-                """, unsafe_allow_html=True)
+                        <div style="font-size: 13px; color: #6B7280; margin-bottom: 8px;">
+                            <span style="margin-right: 16px;">🏷️ {row['service_type']}</span>
+                            <span style="margin-right: 16px;">⏰ {row['alert_time']}</span>
+                            {resolved_time_html}
+                            {notify_html}
+                        </div>
+                        {remaining_html}
+                        <div style="font-size: 14px;">
+                            <span style="margin-right: 20px;">
+                                响应时间：<strong style="color: {border_color};">{float(row['response_time']):.0f} ms</strong>
+                            </span>
+                            <span style="margin-right: 20px;">
+                                警告阈值：<strong>{float(row['warning_threshold']):.0f} ms</strong>
+                            </span>
+                            <span>
+                                异常阈值：<strong>{float(row['critical_threshold']):.0f} ms</strong>
+                            </span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                if is_unresolved:
-                    col_btn1, col_btn2 = st.columns([1, 5])
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 4])
                     with col_btn1:
-                        if st.button(f"✅ 标记已处理", key=f"resolve_{row['alert_id']}", type="primary"):
-                            update_alert_status(row["alert_id"], "已处理")
-                            st.success("✅ 告警已标记为已处理！")
-                            st.rerun()
+                        if is_unresolved:
+                            if st.button(f"✅ 标记已处理", key=f"resolve_{row['alert_id']}", type="primary"):
+                                update_alert_status(row["alert_id"], "已处理")
+                                st.success("✅ 告警已标记为已处理！")
+                                st.rerun()
                     with col_btn2:
+                        if st.button(f"📋 查看详情", key=f"detail_{row['alert_id']}", type="secondary"):
+                            st.session_state["selected_alert_detail"] = row["alert_id"]
+                            st.rerun()
+                    with col_btn3:
                         pass
 
-                st.markdown("</div></div>", unsafe_allow_html=True)
+        with col_detail:
+            st.subheader("📋 告警详情")
+            selected_id = st.session_state.get("selected_alert_detail")
+            if selected_id and not alerts_df.empty:
+                detail_row = alerts_df[alerts_df["alert_id"] == selected_id]
+                if len(detail_row) > 0:
+                    detail = detail_row.iloc[0]
+                    current_level = detail.get("current_level", detail["alert_level"])
+                    upgrade_count = int(detail.get("upgrade_count", "0") or 0)
+                    history = parse_upgrade_history(detail.get("upgrade_history", ""))
+                    remaining_sec, remaining_str = get_remaining_upgrade_time(detail)
+
+                    level_color = get_alert_level_color(current_level)
+                    level_emoji = get_alert_level_emoji(current_level)
+
+                    st.markdown(f"""
+                    <div style="padding: 16px; background: linear-gradient(135deg, {level_color}22, {level_color}11); border-radius: 10px; margin-bottom: 16px;">
+                        <div style="font-size: 20px; font-weight: 700; margin-bottom: 8px;">
+                            {level_emoji} {detail['service_name']}
+                        </div>
+                        <div style="font-size: 14px; color: #6B7280;">
+                            告警ID：{detail['alert_id']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    col_d1, col_d2 = st.columns(2)
+                    with col_d1:
+                        st.metric("当前级别", current_level)
+                        st.metric("初始级别", detail.get("original_level", detail["alert_level"]))
+                    with col_d2:
+                        st.metric("升级次数", f"{upgrade_count} 次")
+                        st.metric("处理状态", detail["status"])
+
+                    st.markdown("**👤 通知人员**")
+                    st.info(f"当前通知：**{detail.get('notify_person', '未设置')}**")
+
+                    if detail["status"] == "未处理":
+                        st.markdown("**⏰ 升级时间**")
+                        if remaining_sec is not None:
+                            if remaining_sec > 0:
+                                urgency = "🔴 紧急" if remaining_sec < 300 else ("🟡 注意" if remaining_sec < 600 else "🟢 充足")
+                                st.info(f"{urgency} | 剩余：**{remaining_str}**\n\n下次升级时间：{detail.get('next_upgrade_time', '')}")
+                            else:
+                                st.error("⚠️ 已达到升级时间，即将自动升级！")
+                        else:
+                            st.info(remaining_str)
+                        if detail.get("last_upgrade_time"):
+                            st.caption(f"上次升级时间：{detail['last_upgrade_time']}")
+
+                    st.markdown("**📊 响应信息**")
+                    st.dataframe(
+                        pd.DataFrame([{
+                            "响应时间(ms)": f"{float(detail['response_time']):.0f}",
+                            "警告阈值(ms)": f"{float(detail['warning_threshold']):.0f}",
+                            "异常阈值(ms)": f"{float(detail['critical_threshold']):.0f}",
+                            "告警时间": detail["alert_time"],
+                            "处理时间": detail.get("resolved_time", "-") or "-"
+                        }]).T,
+                        use_container_width=True,
+                        header=False
+                    )
+
+                    st.divider()
+                    st.subheader("📜 升级历史记录")
+
+                    if history:
+                        for h_idx, h_item in enumerate(reversed(history)):
+                            h_level = h_item.get("level", "")
+                            h_time = h_item.get("time", "")
+                            h_action = h_item.get("action", "")
+                            h_notify = h_item.get("notify_person", "")
+                            h_color = get_alert_level_color(h_level)
+
+                            is_first = h_idx == 0
+                            st.markdown(f"""
+                            <div style="display: flex; margin-bottom: 12px;">
+                                <div style="display: flex; flex-direction: column; align-items: center; margin-right: 12px;">
+                                    <div style="width: 14px; height: 14px; border-radius: 50%; background-color: {h_color}; border: 2px solid white; box-shadow: 0 0 0 2px {h_color}44;"></div>
+                                    {"<div style='width: 2px; flex: 1; background-color: #E5E7EB; margin-top: 4px;'></div>" if not is_first else ""}
+                                </div>
+                                <div style="flex: 1; padding: 10px 14px; background-color: white; border-radius: 8px; border-left: 3px solid {h_color};">
+                                    <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">
+                                        <span style="color: {h_color};">{h_level}</span>
+                                        &nbsp;·&nbsp; {h_action}
+                                    </div>
+                                    <div style="font-size: 12px; color: #6B7280;">
+                                        🕐 {h_time}
+                                        &nbsp;·&nbsp; 👤 通知：{h_notify}
+                                    </div>
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.info("暂无升级历史记录")
+                else:
+                    st.info("👈 请从左侧列表中选择一条告警查看详情")
+            else:
+                st.info("👈 请从左侧列表中选择一条告警查看详情")
 
         st.divider()
         st.subheader("📊 告警数据表格")
 
         table_df = alerts_df.copy()
         table_df = table_df.sort_values("alert_time", ascending=False)
+
         table_display = table_df[[
             "alert_id", "service_name", "service_type", "alert_level",
+            "original_level", "upgrade_count", "notify_person",
             "alert_time", "response_time", "warning_threshold",
-            "critical_threshold", "status", "resolved_time"
+            "critical_threshold", "status", "next_upgrade_time", "resolved_time"
         ]].copy()
         table_display.columns = [
-            "告警ID", "服务名称", "服务类型", "告警级别", "告警时间",
-            "响应时间(ms)", "警告阈值(ms)", "异常阈值(ms)", "状态", "处理时间"
+            "告警ID", "服务名称", "服务类型", "当前级别", "初始级别",
+            "升级次数", "通知人员", "告警时间", "响应时间(ms)",
+            "警告阈值(ms)", "异常阈值(ms)", "状态", "下次升级时间", "处理时间"
         ]
 
         st.dataframe(
-            table_display.style.applymap(color_status, subset=["告警级别", "状态"]),
+            table_display.style.applymap(color_status, subset=["当前级别", "初始级别", "状态"]),
             use_container_width=True,
             hide_index=True,
             height=400
